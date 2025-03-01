@@ -1,0 +1,26 @@
+[package]
+name = "kuberator"
+version = "0.1.0"
+edition = "2021"
+authors = ["Mathias Oertel <mathias.oertel@gmail.com>"]
+description = "Crate to simplify writing an k8s operator"
+documentation = "https://docs.rs/kuberator"
+readme = "README.md"
+keywords = ["operator", "k8s", "kubernetes"]
+license = "MIT"
+repository = "https://github.com/maoertel/kuberator"
+
+[dependencies]
+kube = { version = "0.98", features = ["runtime", "derive"] }
+k8s-openapi = { version = "0.24", features = ["latest"] }
+
+futures = { version = "0.3", default-features = false }
+async-trait = "0.1"
+
+schemars = "0.8"
+serde = { version = "1.0", features = ["derive", "rc"] }
+
+log = { version = "0.4", features = ["kv", "kv_serde"] }
+
+thiserror = "2.0"
+anyhow = "1.0"
