@@ -1,11 +1,11 @@
 # Kuberator - Kubernetes Operator Framework
 
-`Kuberator` is a Kubernetes Operator Framework that should help you build Kubernetes Operators. And it
-is a heavy work in progress.
+`Kuberator`is a Kubernetes Operator Framework designed to simplify the process of 
+building Kubernetes Operators. It is still in its early stages and a work in progress. 
 
 ## Usage
 
-It's best to follow an example to understand how to use the `kuberator`.
+It's best to follow an example to understand how to use `kuberator` in it's current form.
 
 ```rust
 use std::sync::Arc;
@@ -79,14 +79,14 @@ impl Context<MyCrd, MyK8sRepo> for MyContext {
     // The [handle_apply] function is triggered whenever a custom resource object is
     // created or updated.
     async fn handle_apply(&self, object: Arc<MyCrd>) -> KubeResult<Action> {
-        // do whatever you wnat with your custom resource object
+        // do whatever you want with your custom resource object
         println!("My property is: {}", object.spec.my_property);
         Ok(Action::await_change())
     }
 
     // The [handle_cleanup] function is triggered when a custom resource object is deleted.
     async fn handle_cleanup(&self, object: Arc<MyCrd>) -> KubeResult<Action> {
-        // do whatever you wnat with your custom resource object
+        // do whatever you want with your custom resource object
         println!("My property is: {}", object.spec.my_property);
         Ok(Action::await_change())
     }
@@ -134,6 +134,80 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 ```
+
+## Error Handling
+
+Kuberator provides a dedicated error type. When implementing [Reconcile::handle_apply]
+and [Reconcile::handle_cleanup], you must return this error in your Result, or use
+[kuberator::error::Result] directly.
+
+To convert your custom error into a Kuberator error, implement `From` for your error
+type and wrap it using `Error::Anyhow`.
+
+Your `error.rs` file could look something like this:
+
+```rust
+use std::fmt::Debug;
+
+use kuberator::error::Error as KubeError;
+use thiserror::Error as ThisError;
+
+pub type Result<T> = std::result::Result<T, Error>;
+
+#[derive(ThisError, Debug)]
+pub enum Error {
+    #[error("Kube error: {0}")]
+    Kube(#[from] kube::Error),
+}
+
+impl From<Error> for KubeError {
+    fn from(error: Error) -> KubeError {
+        KubeError::Anyhow(anyhow::anyhow!(error))
+    }
+}
+```
+
+With this approach, you can conveniently handle your custom errors using the `?` operator
+and return them as Kuberator errors.
+
+## Status Object Handling
+
+Kuberator provides helper methods to facilitate the **Observed Generation Pattern.** To use 
+this pattern, you need to implement the ObserveGeneration trait for your status object.
+
+Let's say this is your `status.rs` file:
+
+```rust
+use kuberator::ObserveGeneration;
+
+pub struct MyStatus {
+    pub status: State,
+    pub observed_generation: Option<i64>,
+}
+
+pub enum State {
+    Created,
+    Updated,
+    Deleted,
+}
+
+impl ObserveGeneration for MyStatus {
+    fn add(&mut self, observed_generation: i64) {
+        self.observed_generation = Some(observed_generation);
+    }
+}
+```
+
+With this implementation, you can utilize the `update_status()` method provided by the 
+[Finalize] trait.
+
+This allows you to:
+(a) Keep your resource status up to date.
+(b) Compare it against the current generation of the resource (`object.meta().generation`) 
+to determine whether you have already processed this version or if it is a new show in 
+the reconciliation cycle.
+
+This pattern is particularly useful for ensuring idempotency in your reconciliation logic.
 
 ## License
 

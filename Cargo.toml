@@ -8,7 +8,7 @@ documentation = "https://docs.rs/kuberator"
 readme = "README.md"
 keywords = ["operator", "k8s", "kubernetes"]
 license = "MIT"
-repository = "https://github.com/maoertel/kuberator"
+repository = "https://github.com/commercetools/kuberator"
 
 [dependencies]
 kube = { version = "0.98", features = ["runtime", "derive"] }
