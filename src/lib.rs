@@ -403,7 +403,7 @@ where
     /// Updates the status object of a resource.
     ///
     /// Updating the status does not trigger a new reconiliation loop.
-    async fn update_status<S>(&self, object: Arc<R>, mut status: S) -> Result<()>
+    async fn update_status<S>(&self, object: &R, mut status: S) -> Result<()>
     where
         S: Serialize + ObserveGeneration + Debug + Send + Sync,
     {
