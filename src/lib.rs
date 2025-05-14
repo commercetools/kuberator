@@ -219,6 +219,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::stream::StreamExt;
 use futures::TryFuture;
+use k8s_openapi::Metadata;
 use k8s_openapi::NamespaceResourceScope;
 use kube::api::ObjectMeta;
 use kube::api::Patch;
@@ -247,7 +248,15 @@ const REQUEUE_AFTER_ERROR_SECONDS: u64 = 60;
 #[async_trait]
 pub trait Reconcile<R, C, F>: Sized
 where
-    R: Resource<Scope = NamespaceResourceScope> + Serialize + DeserializeOwned + Debug + Clone + Send + Sync + 'static,
+    R: Resource<Scope = NamespaceResourceScope>
+        + Metadata
+        + Serialize
+        + DeserializeOwned
+        + Debug
+        + Clone
+        + Send
+        + Sync
+        + 'static,
     R::DynamicType: Default + Eq + Hash + Clone + Debug + Unpin,
     C: Context<R, F> + 'static,
     F: Finalize<R>,
@@ -300,7 +309,15 @@ where
 #[async_trait]
 pub trait Context<R, F>: Send + Sync
 where
-    R: Resource<Scope = NamespaceResourceScope> + Serialize + DeserializeOwned + Debug + Clone + Send + Sync + 'static,
+    R: Resource<Scope = NamespaceResourceScope>
+        + Metadata
+        + Serialize
+        + DeserializeOwned
+        + Debug
+        + Clone
+        + Send
+        + Sync
+        + 'static,
     R::DynamicType: Default,
     F: Finalize<R>,
 {
@@ -372,7 +389,15 @@ where
 #[async_trait]
 pub trait Finalize<R>: Send + Sync
 where
-    R: Resource<Scope = NamespaceResourceScope> + Serialize + DeserializeOwned + Debug + Clone + Send + Sync + 'static,
+    R: Resource<Scope = NamespaceResourceScope>
+        + Metadata
+        + Serialize
+        + DeserializeOwned
+        + Debug
+        + Clone
+        + Send
+        + Sync
+        + 'static,
     R::DynamicType: Default,
 {
     /// Returns the k8s client that is used to interact with the k8s api.
