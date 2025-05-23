@@ -232,7 +232,9 @@ use kube::Api;
 use kube::Client;
 use kube::Resource;
 use kube::ResourceExt;
+use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
+use serde::Deserialize;
 use serde::Serialize;
 
 use crate::error::Error;
@@ -444,6 +446,40 @@ pub trait ObserveGeneration {
         if let Some(observed_generation) = observed_generation {
             self.add(observed_generation)
         }
+    }
+}
+
+/// The AsStatusError trait is used to convert a resource into a status error.
+///
+/// This way a user can convert control how the errors that are shown in the status objects
+/// are shown to the user.
+pub trait AsStatusError<E>
+where
+    E: Serialize + Debug + PartialEq + Clone + JsonSchema,
+    E: for<'de> Deserialize<'de>,
+{
+    /// Converts the self into a status error.
+    fn as_status_error(&self) -> E;
+}
+
+/// The WithStatusError trait is used to add a status error to a resource.
+///
+/// The user needs to implement the [WithStatusError::add] method to handle the logic to how
+/// the status error is added to the resource to then be able to use the convenience method
+/// [WithStatusError::with_status_error].
+pub trait WithStatusError<A, E>
+where
+    A: AsStatusError<E>,
+    E: Serialize + Debug + PartialEq + Clone + JsonSchema,
+    E: for<'de> Deserialize<'de>,
+{
+    /// Adds a status error to the status object of a resource.
+    fn add(&mut self, error: E);
+
+    /// Takes an error that implements the [AsStatusError] trait and adds it to the status as
+    /// a status error.
+    fn with_status_error(&mut self, error: &A) {
+        self.add(error.as_status_error());
     }
 }
 
