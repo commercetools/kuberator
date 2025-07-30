@@ -127,7 +127,7 @@
 //!         crd_api: Api::namespaced(client, "default"),
 //!     };
 //!
-//!     reconciler.start(10).await;
+//!     reconciler.start(Some(10)).await;
 //!
 //!     Ok(())
 //! }
