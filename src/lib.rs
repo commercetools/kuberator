@@ -127,7 +127,7 @@
 //!         crd_api: Api::namespaced(client, "default"),
 //!     };
 //!
-//!     reconciler.start().await;
+//!     reconciler.start(10).await;
 //!
 //!     Ok(())
 //! }
@@ -213,6 +213,7 @@ pub mod error;
 use std::error::Error as StdError;
 use std::fmt::Debug;
 use std::hash::Hash;
+use std::result::Result as StdResult;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -224,8 +225,10 @@ use kube::api::ObjectMeta;
 use kube::api::Patch;
 use kube::api::PatchParams;
 use kube::runtime::controller::Action;
+use kube::runtime::controller::Error as KubeControllerError;
 use kube::runtime::finalizer;
 use kube::runtime::finalizer::Event;
+use kube::runtime::reflector::ObjectRef;
 use kube::runtime::watcher::Config;
 use kube::runtime::Controller;
 use kube::Api;
@@ -242,6 +245,8 @@ use crate::error::Result;
 
 const REQUEUE_AFTER_ERROR_SECONDS: u64 = 60;
 
+type ReconciliationResult<R, RE, QE> = StdResult<(ObjectRef<R>, Action), KubeControllerError<RE, QE>>;
+
 /// The Reconcile trait takes care of the starting of the controller and the reconciliation loop.
 ///
 /// The user needs to implement the [Reconcile::destruct] method as well as a component F that
@@ -255,20 +260,15 @@ where
     F: Finalize<R>,
 {
     /// Starts the controller and runs the reconciliation loop.
-    async fn start(self) {
+    ///
+    /// `limit` is the maximum number of concurrent reconciliations that can be processed.
+    /// If it is set to `None` there is no hard limit on the number of concurrent reconciliations.
+    /// `Some(0)` has the same effect as `None`.
+    async fn start(self, limit: Option<usize>) {
         let (crd_api, config, context) = self.destruct();
         Controller::new(crd_api, config)
             .run(Self::reconcile, Self::error_policy, context)
-            .for_each(|reconciliation_result| async move {
-                match reconciliation_result {
-                    Ok(resource) => {
-                        log::info!("Reconciliation successful. Resource: {resource:?}");
-                    }
-                    Err(error) => {
-                        log::error!("Reconciliation error: {error:?}");
-                    }
-                }
-            })
+            .for_each_concurrent(limit, Self::handle_reconciliation_result)
             .await;
     }
 
@@ -282,6 +282,23 @@ where
     /// reconciliation. The method is hooked into [Reconcile::start].
     fn error_policy(resource: Arc<R>, error: &Error, context: Arc<C>) -> Action {
         context.handle_error(resource, error, Self::requeue_after_error_seconds())
+    }
+
+    /// Handles the result of a reconciliation and is called by the controller in the
+    /// [Reconcile::start] method for each reconiliation.
+    async fn handle_reconciliation_result<RE, QE>(reconciliation_result: ReconciliationResult<R, RE, QE>)
+    where
+        RE: Debug + Send,
+        QE: Debug + Send,
+    {
+        match reconciliation_result {
+            Ok(resource) => {
+                log::info!("Reconciliation successful. Resource: {resource:?}");
+            }
+            Err(error) => {
+                log::error!("Reconciliation error: {error:?}");
+            }
+        }
     }
 
     /// Returns the duration after which a resource is requeued after an error occurred.
