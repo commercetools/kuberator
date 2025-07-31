@@ -214,6 +214,66 @@
 //!
 //! This pattern is particularly useful for ensuring idempotency in your reconciliation logic.
 //!
+//! ## Status Object Error handling
+//!
+//! If you want to handle errors in your status object, you can implement the `WithStatusError` trait.
+//! This trait allows you to define how errors should be handled and reported in the status object.
+//!
+//! ```rust
+//! use kuberator::WithStatusError;
+//! use kuberator::AsStatusError;
+//! use serde::Deserialize;
+//! use serde::Serialize;
+//! use schemars::JsonSchema;
+//!
+//! // You have a custom error type
+//! enum MyError {
+//!     NotFound,
+//!     InvalidInput,
+//! }
+//!
+//! // Additionally, you have you status object with a specific status error
+//! #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, JsonSchema)]
+//! struct MyStatus {
+//!     pub status: String,
+//!     pub observed_generation: Option<i64>,
+//!     pub error: Option<MyStatusError>,
+//! }
+//!
+//! #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, JsonSchema)]
+//! pub struct MyStatusError {
+//!     pub message: String,
+//! }
+//!
+//! // Implement the `AsStatusError` trait for your custom error type
+//! impl AsStatusError<MyStatusError> for MyError {
+//!     fn as_status_error(&self) -> MyStatusError {
+//!         match self {
+//!             MyError::NotFound => MyStatusError {
+//!                 message: "Resource not found".to_string(),
+//!             },
+//!             MyError::InvalidInput => MyStatusError {
+//!                 message: "Invalid input provided".to_string(),
+//!             },
+//!         }
+//!     }
+//! }
+//!
+//! // And implement the `WithStatusError` trait that links your error and status error
+//! impl WithStatusError<MyError, MyStatusError> for AtlasClusterStatus {
+//!     fn add(&mut self, error: MyStatusError) {
+//!         self.error = Some(error);
+//!     }
+//! }
+//! ```
+//!
+//! With this implementation, you can utilize the `update_status_with_error()` method provided by the
+//! [Finalize] trait. This method takes care of adding the (optional) error to your status object.
+//!
+//! This way, you can handle errors in your status object and report them accordingly. You control how
+//! errors are represented in the status object from the source up, by implementing `AsStatusError` for
+//! your error type.
+//!
 
 pub mod error;
 
