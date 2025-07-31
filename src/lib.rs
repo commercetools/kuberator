@@ -129,6 +129,13 @@
 //!
 //!     reconciler.start(Some(10)).await;
 //!
+//!
+//!     // Start the reconciler, which will handle the reconciliation loop synchronously.
+//!     reconciler.start().await;
+//!
+//!     // If you want to run the reconciler asynchronously, you can use the `start_concurrent` method.
+//!     // reconciler.start_concurrent(Some(10)).await;
+//!
 //!     Ok(())
 //! }
 //! ```

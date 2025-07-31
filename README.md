@@ -129,7 +129,11 @@ async fn main() -> anyhow::Result<()> {
         crd_api: Api::namespaced(client, "default"),
     };
 
+    // Start the reconciler, which will handle the reconciliation loop synchronously.
     reconciler.start().await;
+
+    // If you want to run the reconciler asynchronously, you can use the `start_concurrent` method.
+    // reconciler.start_concurrent(Some(10)).await;
 
     Ok(())
 }
