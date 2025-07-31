@@ -453,6 +453,22 @@ where
 
         Ok(())
     }
+
+    /// Updates the status object of a resource with an optional error.
+    ///
+    /// Updating the status does not trigger a new reconiliation loop.
+    async fn update_status_with_error<S, A, E>(&self, object: &R, mut status: S, error: Option<&A>) -> Result<()>
+    where
+        S: Serialize + ObserveGeneration + WithStatusError<A, E> + Debug + Send + Sync,
+        A: AsStatusError<E> + Send + Sync,
+        E: Serialize + Debug + PartialEq + Clone + JsonSchema,
+        E: for<'de> Deserialize<'de>,
+    {
+        if let Some(error) = error {
+            status.with_status_error(error);
+        }
+        self.update_status(object, status).await
+    }
 }
 
 /// The Status struct is a serializable wrapper around the status object S of a resource.
