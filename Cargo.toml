@@ -1,6 +1,6 @@
 [package]
 name = "kuberator"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
 authors = ["Mathias Oertel <mathias.oertel@gmail.com>"]
 description = "Crate to simplify writing an k8s operator"
