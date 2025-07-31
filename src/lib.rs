@@ -259,12 +259,23 @@ where
     C: Context<R, F> + 'static,
     F: Finalize<R>,
 {
-    /// Starts the controller and runs the reconciliation loop.
+    /// Starts the controller and runs the reconciliation loop, where as reconciliations run
+    /// synchronously. If you want asynchronous reconciliations, use [Reconcile::start_concurrent].
+    async fn start(self) {
+        let (crd_api, config, context) = self.destruct();
+        Controller::new(crd_api, config)
+            .run(Self::reconcile, Self::error_policy, context)
+            .for_each(Self::handle_reconciliation_result)
+            .await;
+    }
+
+    /// Starts the controller and runs the reconciliation loop, where as reconciliations run
+    /// concurrently.
     ///
     /// `limit` is the maximum number of concurrent reconciliations that can be processed.
     /// If it is set to `None` there is no hard limit on the number of concurrent reconciliations.
     /// `Some(0)` has the same effect as `None`.
-    async fn start(self, limit: Option<usize>) {
+    async fn start_concurrent(self, limit: Option<usize>) {
         let (crd_api, config, context) = self.destruct();
         Controller::new(crd_api, config)
             .run(Self::reconcile, Self::error_policy, context)
