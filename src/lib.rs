@@ -280,11 +280,13 @@ pub mod error;
 use std::error::Error as StdError;
 use std::fmt::Debug;
 use std::hash::Hash;
+use std::pin::Pin;
 use std::result::Result as StdResult;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use futures::stream::Stream;
 use futures::stream::StreamExt;
 use futures::TryFuture;
 use k8s_openapi::NamespaceResourceScope;
@@ -296,7 +298,8 @@ use kube::runtime::controller::Error as KubeControllerError;
 use kube::runtime::finalizer;
 use kube::runtime::finalizer::Event;
 use kube::runtime::reflector::ObjectRef;
-use kube::runtime::watcher::Config;
+use kube::runtime::reflector::Store;
+use kube::runtime::watcher::Error as KubeWatcherError;
 use kube::runtime::Controller;
 use kube::Api;
 use kube::Client;
@@ -313,6 +316,7 @@ use crate::error::Result;
 const REQUEUE_AFTER_ERROR_SECONDS: u64 = 60;
 
 type ReconciliationResult<R, RE, QE> = StdResult<(ObjectRef<R>, Action), KubeControllerError<RE, QE>>;
+pub type WatcherStream<R> = Pin<Box<dyn Stream<Item = StdResult<R, KubeWatcherError>> + Send + 'static>>;
 
 /// The Reconcile trait takes care of the starting of the controller and the reconciliation loop.
 ///
@@ -329,8 +333,8 @@ where
     /// Starts the controller and runs the reconciliation loop, where as reconciliations run
     /// synchronously. If you want asynchronous reconciliations, use [Reconcile::start_concurrent].
     async fn start(self) {
-        let (crd_api, config, context) = self.destruct();
-        Controller::new(crd_api, config)
+        let (watch_stream, reader, context) = self.destruct();
+        Controller::for_stream(watch_stream, reader)
             .run(Self::reconcile, Self::error_policy, context)
             .for_each(Self::handle_reconciliation_result)
             .await;
@@ -343,8 +347,8 @@ where
     /// If it is set to `None` there is no hard limit on the number of concurrent reconciliations.
     /// `Some(0)` has the same effect as `None`.
     async fn start_concurrent(self, limit: Option<usize>) {
-        let (crd_api, config, context) = self.destruct();
-        Controller::new(crd_api, config)
+        let (watch_stream, reader, context) = self.destruct();
+        Controller::for_stream(watch_stream, reader)
             .run(Self::reconcile, Self::error_policy, context)
             .for_each_concurrent(limit, Self::handle_reconciliation_result)
             .await;
@@ -390,7 +394,7 @@ where
 
     /// Destructs components from the implementing struct that are injected into the
     /// controller in the [Reconcile::start] method.
-    fn destruct(self) -> (Api<R>, Config, Arc<C>);
+    fn destruct(self) -> (WatcherStream<R>, Store<R>, Arc<C>);
 }
 
 /// The Context trait takes care of the apply and cleanup logic of a resource.

@@ -1,6 +1,6 @@
 [package]
 name = "kuberator"
-version = "0.1.7"
+version = "0.2.0"
 edition = "2021"
 authors = ["Mathias Oertel <mathias.oertel@gmail.com>"]
 description = "Crate to simplify writing an k8s operator"
@@ -11,7 +11,7 @@ license = "MIT"
 repository = "https://github.com/commercetools/kuberator"
 
 [dependencies]
-kube = { version = "1.1", features = ["runtime", "derive"] }
+kube = { version = "1.1", features = ["runtime", "derive", "unstable-runtime"] }
 k8s-openapi = { version = "0.25", features = ["latest"] }
 
 futures = { version = "0.3", default-features = false }
