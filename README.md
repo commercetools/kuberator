@@ -96,8 +96,11 @@ impl Context<MyCrd, MyK8sRepo> for MyContext {
 // The Reconciler is responsible for starting the controller runtime and managing the
 // reconciliation loop.
 
-// The [destruct] function is used to retrieve the Api, Config, and context.
-// And that’s basically it!
+// The [destruct] function is used to retrieve the watcher stream, store, and context.
+// The watcher stream consists of a predicate-filtered event stream for resources to be watched.
+// The store is a readable cache created by the kube-runtime reflector that maintains
+// the current state of watched resources.
+// Predicate filtering prevents objects from reconciling when only their status is updated.
 struct MyReconciler {
     context: Arc<MyContext>,
     crd_api: Api<MyCrd>,
@@ -105,8 +108,15 @@ struct MyReconciler {
 
 #[async_trait]
 impl Reconcile<MyCrd, MyContext, MyK8sRepo> for MyReconciler {
-    fn destruct(self) -> (Api<MyCrd>, Config, Arc<MyContext>) {
-        (self.crd_api, Config::default(), self.context)
+    fn destruct(self) -> (WatcherStream<MyCrd>, Store<MyCrd>, Arc<MyContext>) {
+        let (reader, writer) = reflector::store();
+        let watch_stream = Box::pin(
+            watcher(self.crd_api, Config::default())
+                .reflect(writer)
+                .applied_objects()
+                .predicate_filter(predicates::generation.combine(predicates::finalizers)),
+        );
+        (watch_stream, reader, self.context)
     }
 }
 
