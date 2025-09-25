@@ -279,6 +279,7 @@ pub mod error;
 
 use std::error::Error as StdError;
 use std::fmt::Debug;
+use std::future::Future;
 use std::hash::Hash;
 use std::result::Result as StdResult;
 use std::sync::Arc;
@@ -328,9 +329,13 @@ where
 {
     /// Starts the controller and runs the reconciliation loop, where as reconciliations run
     /// synchronously. If you want asynchronous reconciliations, use [Reconcile::start_concurrent].
-    async fn start(self) {
+    async fn start<G>(self, graceful_trigger: Option<G>)
+    where
+        G: Future<Output = ()> + Send + Sync + 'static,
+    {
         let (crd_api, config, context) = self.destruct();
-        Controller::new(crd_api, config)
+
+        controller(crd_api, config, graceful_trigger)
             .run(Self::reconcile, Self::error_policy, context)
             .for_each(Self::handle_reconciliation_result)
             .await;
@@ -342,9 +347,13 @@ where
     /// `limit` is the maximum number of concurrent reconciliations that can be processed.
     /// If it is set to `None` there is no hard limit on the number of concurrent reconciliations.
     /// `Some(0)` has the same effect as `None`.
-    async fn start_concurrent(self, limit: Option<usize>) {
+    async fn start_concurrent<G>(self, limit: Option<usize>, graceful_trigger: Option<G>)
+    where
+        G: Future<Output = ()> + Send + Sync + 'static,
+    {
         let (crd_api, config, context) = self.destruct();
-        Controller::new(crd_api, config)
+
+        controller(crd_api, config, graceful_trigger)
             .run(Self::reconcile, Self::error_policy, context)
             .for_each_concurrent(limit, Self::handle_reconciliation_result)
             .await;
@@ -391,6 +400,21 @@ where
     /// Destructs components from the implementing struct that are injected into the
     /// controller in the [Reconcile::start] method.
     fn destruct(self) -> (Api<R>, Config, Arc<C>);
+}
+
+fn controller<R, G>(crd_api: Api<R>, config: Config, graceful_trigger: Option<G>) -> Controller<R>
+where
+    R: Resource<Scope = NamespaceResourceScope> + Serialize + DeserializeOwned + Debug + Clone + Send + Sync + 'static,
+    R::DynamicType: Default + Eq + Hash + Clone + Debug + Unpin,
+    G: Future<Output = ()> + Send + Sync + 'static,
+{
+    let controller = Controller::new(crd_api, config);
+
+    if let Some(trigger) = graceful_trigger {
+        return controller.graceful_shutdown_on(trigger);
+    };
+
+    controller
 }
 
 /// The Context trait takes care of the apply and cleanup logic of a resource.
