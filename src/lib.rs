@@ -336,7 +336,6 @@ where
         let (crd_api, config, context) = self.destruct();
 
         controller(crd_api, config, graceful_trigger)
-            .await
             .run(Self::reconcile, Self::error_policy, context)
             .for_each(Self::handle_reconciliation_result)
             .await;
@@ -355,7 +354,6 @@ where
         let (crd_api, config, context) = self.destruct();
 
         controller(crd_api, config, graceful_trigger)
-            .await
             .run(Self::reconcile, Self::error_policy, context)
             .for_each_concurrent(limit, Self::handle_reconciliation_result)
             .await;
@@ -404,7 +402,7 @@ where
     fn destruct(self) -> (Api<R>, Config, Arc<C>);
 }
 
-async fn controller<R, G>(crd_api: Api<R>, config: Config, graceful_trigger: Option<G>) -> Controller<R>
+fn controller<R, G>(crd_api: Api<R>, config: Config, graceful_trigger: Option<G>) -> Controller<R>
 where
     R: Resource<Scope = NamespaceResourceScope> + Serialize + DeserializeOwned + Debug + Clone + Send + Sync + 'static,
     R::DynamicType: Default + Eq + Hash + Clone + Debug + Unpin,
