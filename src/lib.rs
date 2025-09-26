@@ -131,14 +131,37 @@
 //!
 //!
 //!     // Start the reconciler, which will handle the reconciliation loop synchronously.
-//!     reconciler.start().await;
+//!     reconciler.start(None).await;
 //!
 //!     // If you want to run the reconciler asynchronously, you can use the `start_concurrent` method.
-//!     // reconciler.start_concurrent(Some(10)).await;
+//!     // reconciler.start_concurrent(Some(10), None).await;
 //!
 //!     Ok(())
 //! }
 //! ```
+//!
+//! The second parameter of the `start` and `start_concurrent` methods is an optional graceful shutdown
+//! signal. You can pass a future that resolves when you want to shut down the reconciler, like an OS
+//! signal, e.g. `SIGTERM`.
+//!
+//! ```rust
+//! use tokio::signal;
+//! use futures::select;
+//!
+//! let shutdown_signal = async {
+//!     let mut interrupt = signal::ctrl_c();
+//!     let mut terminate = signal::unix::signal(signal::unix::SignalKind::terminate())
+//!         .expect("Failed to install SIGTERM handler");
+//!
+//!     select! {
+//!         _ = interrupt => log::info!("Received SIGINT, shutting down"),
+//!         _ = terminate.recv() => log::info!("Received SIGTERM, shutting down"),
+//!     }
+//! };
+//!
+//! reconciler.start(Some(shutdown_signal)).await;
+//! ```
+//!
 //!
 //! ## Error Handling
 //!
