@@ -342,12 +342,13 @@ type ReconciliationResult<R, RE, QE> = StdResult<(ObjectRef<R>, Action), KubeCon
 /// The user needs to implement the [Reconcile::destruct] method as well as a component F that
 /// implements [Finalize] and a component C that implements [Context] and uses component F.
 #[async_trait]
-pub trait Reconcile<R, C, F>: Sized
+pub trait Reconcile<R, C, F, P>: Sized
 where
     R: Resource<Scope = NamespaceResourceScope> + Serialize + DeserializeOwned + Debug + Clone + Send + Sync + 'static,
     R::DynamicType: Default + Eq + Hash + Clone + Debug + Unpin,
-    C: Context<R, F> + 'static,
-    F: Finalize<R>,
+    C: Context<R, F, P> + 'static,
+    F: Finalize<R, P>,
+    P: ProvideApi<R> + 'static,
 {
     /// Starts the controller and runs the reconciliation loop, where as reconciliations run
     /// synchronously. If you want asynchronous reconciliations, use [Reconcile::start_concurrent].
@@ -441,11 +442,12 @@ where
 
 /// The Context trait takes care of the apply and cleanup logic of a resource.
 #[async_trait]
-pub trait Context<R, F>: Send + Sync
+pub trait Context<R, F, P>: Send + Sync
 where
     R: Resource<Scope = NamespaceResourceScope> + Serialize + DeserializeOwned + Debug + Clone + Send + Sync + 'static,
     R::DynamicType: Default,
-    F: Finalize<R>,
+    F: Finalize<R, P>,
+    P: ProvideApi<R>,
 {
     /// Handles a successful reconciliation of a resource.
     ///
@@ -513,13 +515,14 @@ where
 /// This component needs to be implemented by a struct that is used by the [Context] component,
 /// something like a k8s repository, as it interacts with the k8s api directly.
 #[async_trait]
-pub trait Finalize<R>: Send + Sync
+pub trait Finalize<R, P>: Send + Sync
 where
     R: Resource<Scope = NamespaceResourceScope> + Serialize + DeserializeOwned + Debug + Clone + Send + Sync + 'static,
     R::DynamicType: Default,
+    P: ProvideApi<R>,
 {
     /// Returns the provider for k8s Api.
-    fn api(&self) -> &impl ProvideApi<R>;
+    fn api(&self) -> &P;
 
     /// Delegates the finalization logic to the [kube::runtime::finalizer::finalizer] function
     /// of the kube runtime by utilizing the reconcile function injected by the [Context].
