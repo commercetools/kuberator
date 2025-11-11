@@ -14,6 +14,7 @@
 //! use kube::Api;
 //! use kube::Client;
 //! use kube::CustomResource;
+//! use kuberator::cache::StaticApiProvider;
 //! use kuberator::error::Result as KubeResult;
 //! use kuberator::Context;
 //! use kuberator::Finalize;
@@ -43,12 +44,12 @@
 //! // The `Finalize` trait will be implemented on a Kubernetes repository-like structure
 //! // and is responsible for handling the finalizer logic.
 //! struct MyK8sRepo {
-//!     client: Client,
+//!     api_provider: StaticApiProvider<MyCrd>,
 //! }
 //!
 //! impl Finalize<MyCrd> for MyK8sRepo {
-//!     fn client(&self) -> Client {
-//!         self.client.clone()
+//!     fn api(&self) -> &impl ProvideApi<MyCrd> {
+//!         &self.api_provider
 //!     }
 //! }
 //!
@@ -116,7 +117,7 @@
 //!     let client = Client::try_default().await?;
 //!
 //!     let k8s_repo = MyK8sRepo {
-//!         client: client.clone(),
+//!         api_provider: StaticApiProvider::new(client.clone(), vec!["default"]),
 //!     };
 //!     let context = MyContext {
 //!         repo: Arc::new(k8s_repo),
@@ -126,9 +127,6 @@
 //!         context: Arc::new(context),
 //!         crd_api: Api::namespaced(client, "default"),
 //!     };
-//!
-//!     reconciler.start(Some(10)).await;
-//!
 //!
 //!     // Start the reconciler, which will handle the reconciliation loop synchronously.
 //!     reconciler.start(None).await;
@@ -298,6 +296,7 @@
 //! your error type.
 //!
 
+pub mod cache;
 pub mod error;
 
 use std::error::Error as StdError;
@@ -323,7 +322,6 @@ use kube::runtime::reflector::ObjectRef;
 use kube::runtime::watcher::Config;
 use kube::runtime::Controller;
 use kube::Api;
-use kube::Client;
 use kube::Resource;
 use kube::ResourceExt;
 use schemars::JsonSchema;
@@ -331,6 +329,7 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::cache::ProvideApi;
 use crate::error::Error;
 use crate::error::Result;
 
@@ -519,8 +518,8 @@ where
     R: Resource<Scope = NamespaceResourceScope> + Serialize + DeserializeOwned + Debug + Clone + Send + Sync + 'static,
     R::DynamicType: Default,
 {
-    /// Returns the k8s client that is used to interact with the k8s api.
-    fn client(&self) -> Client;
+    /// Returns the provider for k8s Api.
+    fn api(&self) -> &impl ProvideApi<R>;
 
     /// Delegates the finalization logic to the [kube::runtime::finalizer::finalizer] function
     /// of the kube runtime by utilizing the reconcile function injected by the [Context].
@@ -538,7 +537,7 @@ where
         ReconcileFut: TryFuture<Ok = Action> + Send,
         ReconcileFut::Error: StdError + Send + 'static,
     {
-        let api = Api::<R>::namespaced(self.client(), &object.try_namespace()?);
+        let api = self.api().get(&object.try_namespace()?)?;
         finalizer(&api, finalizer_name, object, reconcile)
             .await
             .map_err(Error::from)
@@ -551,7 +550,7 @@ where
     where
         S: Serialize + ObserveGeneration + Debug + Send + Sync,
     {
-        let api = Api::<R>::namespaced(self.client(), &object.try_namespace()?);
+        let api = self.api().get(&object.try_namespace()?)?;
 
         status.with_observed_gen(object.meta());
         let new_status = Status { status };
