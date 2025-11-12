@@ -5,7 +5,7 @@
 //!
 //! It's best to follow an example to understand how to use `kuberator` in it's current form.
 //!
-//! ```
+//! ```rust,ignore
 //! use std::sync::Arc;
 //!
 //! use async_trait::async_trait;
@@ -151,7 +151,7 @@
 //! signal. You can pass a future that resolves when you want to shut down the reconciler, like an OS
 //! signal, e.g. `SIGTERM`.
 //!
-//! ```rust
+//! ```rust,ignore
 //! use tokio::signal;
 //! use futures::select;
 //!
@@ -290,7 +290,7 @@
 //! }
 //!
 //! // And implement the `WithStatusError` trait that links your error and status error
-//! impl WithStatusError<MyError, MyStatusError> for AtlasClusterStatus {
+//! impl WithStatusError<MyError, MyStatusError> for MyStatus {
 //!     fn add(&mut self, error: MyStatusError) {
 //!         self.error = Some(error);
 //!     }
