@@ -16,6 +16,7 @@ use kube::runtime::watcher::Config;
 use kube::Api;
 use kube::Client;
 use kube::CustomResource;
+use kuberator::cache::StaticApiProvider;
 use kuberator::error::Result as KubeResult;
 use kuberator::Context;
 use kuberator::Finalize;
@@ -45,12 +46,12 @@ pub struct MySpec {
 // The [Finalize] trait will be implemented on a Kubernetes repository-like structure
 // and is responsible for handling the finalizer logic.
 struct MyK8sRepo {
-    client: Client,
+    api_provider: StaticApiProvider<MyCrd>,
 }
 
-impl Finalize<MyCrd> for MyK8sRepo {
-    fn client(&self) -> Client {
-        self.client.clone()
+impl Finalize<MyCrd, StaticApiProvider<MyCrd>> for MyK8sRepo {
+    fn api(&self) -> &StaticApiProvider<MyCrd> {
+        &self.api_provider
     }
 }
 
@@ -62,7 +63,7 @@ struct MyContext {
 }
 
 #[async_trait]
-impl Context<MyCrd, MyK8sRepo> for MyContext {
+impl Context<MyCrd, MyK8sRepo, StaticApiProvider<MyCrd>> for MyContext {
     // The only requirement is to provide a unique finalizer name and an Arc to an
     // implementation of the [Finalize] trait.
     fn k8s_repository(&self) -> Arc<MyK8sRepo> {
@@ -104,7 +105,7 @@ struct MyReconciler {
 }
 
 #[async_trait]
-impl Reconcile<MyCrd, MyContext, MyK8sRepo> for MyReconciler {
+impl Reconcile<MyCrd, MyContext, MyK8sRepo, StaticApiProvider<MyCrd>> for MyReconciler {
     fn destruct(self) -> (Api<MyCrd>, Config, Arc<MyContext>) {
         (self.crd_api, Config::default(), self.context)
     }
@@ -118,7 +119,7 @@ async fn main() -> anyhow::Result<()> {
     let client = Client::try_default().await?;
 
     let k8s_repo = MyK8sRepo {
-        client: client.clone(),
+        api_provider: StaticApiProvider::new(client.clone(), vec!["default"]),
     };
     let context = MyContext {
         repo: Arc::new(k8s_repo),
