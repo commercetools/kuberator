@@ -20,6 +20,8 @@ pub enum Error {
     UnnamedObject,
     #[error(transparent)]
     Finalizer(#[from] FinalizerError),
+    #[error("RwLock poisoned: {0}")]
+    RwLockPoisoned(String),
 
     /// Can be used for implementors of kuberators to return their errors
     #[error(transparent)]
@@ -53,5 +55,11 @@ impl Error {
             FError::UnnamedObject => Error::Finalizer(FinalizerError::UnnamedObject),
             FError::InvalidFinalizer => Error::Finalizer(FinalizerError::InvalidFinalizer),
         }
+    }
+}
+
+impl<T> From<std::sync::PoisonError<T>> for Error {
+    fn from(e: std::sync::PoisonError<T>) -> Self {
+        Error::RwLockPoisoned(e.to_string())
     }
 }

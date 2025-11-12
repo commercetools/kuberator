@@ -5,7 +5,7 @@
 //!
 //! It's best to follow an example to understand how to use `kuberator` in it's current form.
 //!
-//! ```
+//! ```rust,ignore
 //! use std::sync::Arc;
 //!
 //! use async_trait::async_trait;
@@ -14,6 +14,7 @@
 //! use kube::Api;
 //! use kube::Client;
 //! use kube::CustomResource;
+//! use kuberator::cache::StaticApiProvider;
 //! use kuberator::error::Result as KubeResult;
 //! use kuberator::Context;
 //! use kuberator::Finalize;
@@ -40,17 +41,20 @@
 //! // The core of the operator is the implementation of the `Reconcile` trait, which requires
 //! // us to first implement the `Context` and `Finalize` traits for certain structs.
 //!
-//! // The `Finalize` trait will be implemented on a Kubernetes repository-like structure
-//! // and is responsible for handling the finalizer logic.
-//! struct MyK8sRepo {
-//!     client: Client,
-//! }
+//! // Option 1: Use the generic K8sRepository (recommended for simple cases)
+//! use kuberator::k8s::K8sRepository;
+//! type MyK8sRepo = K8sRepository<MyCrd, StaticApiProvider<MyCrd>>;
 //!
-//! impl Finalize<MyCrd> for MyK8sRepo {
-//!     fn client(&self) -> Client {
-//!         self.client.clone()
-//!     }
-//! }
+//! // Option 2: Create a custom repository (if you need custom state or methods)
+//! // struct MyK8sRepo {
+//! //     api_provider: StaticApiProvider<MyCrd>,
+//! // }
+//! //
+//! // impl Finalize<MyCrd, StaticApiProvider<MyCrd>> for MyK8sRepo {
+//! //     fn api_provider(&self) -> &StaticApiProvider<MyCrd> {
+//! //         &self.api_provider
+//! //     }
+//! // }
 //!
 //! // The `Context` trait must be implemented on a struct that serves as the core of the
 //! // operator. It contains the logic for handling the custom resource object, including
@@ -60,11 +64,11 @@
 //! }
 //!
 //! #[async_trait]
-//! impl Context<MyCrd, MyK8sRepo> for MyContext {
+//! impl Context<MyCrd, MyK8sRepo, StaticApiProvider<MyCrd>> for MyContext {
 //!     // The only requirement is to provide a unique finalizer name and an Arc to an
 //!     // implementation of the `Finalize` trait.
 //!     fn k8s_repository(&self) -> Arc<MyK8sRepo> {
-//!         self.repo.clone()
+//!         Arc::clone(&self.repo)
 //!     }
 //!
 //!     fn finalizer(&self) -> &'static str {
@@ -102,7 +106,7 @@
 //! }
 //!
 //! #[async_trait]
-//! impl Reconcile<MyCrd, MyContext, MyK8sRepo> for MyReconciler {
+//! impl Reconcile<MyCrd, MyContext, MyK8sRepo, StaticApiProvider<MyCrd>> for MyReconciler {
 //!     fn destruct(self) -> (Api<MyCrd>, Config, Arc<MyContext>) {
 //!         (self.crd_api, Config::default(), self.context)
 //!     }
@@ -115,9 +119,15 @@
 //! async fn main() -> anyhow::Result<()> {
 //!     let client = Client::try_default().await?;
 //!
-//!     let k8s_repo = MyK8sRepo {
-//!         client: client.clone(),
-//!     };
+//!     // Using the generic K8sRepository:
+//!     let api_provider = StaticApiProvider::new(client.clone(), vec!["default"]);
+//!     let k8s_repo = K8sRepository::new(api_provider);
+//!
+//!     // Or if using custom repository:
+//!     // let k8s_repo = MyK8sRepo {
+//!     //     api_provider: StaticApiProvider::new(client.clone(), vec!["default"]),
+//!     // };
+//!
 //!     let context = MyContext {
 //!         repo: Arc::new(k8s_repo),
 //!     };
@@ -126,9 +136,6 @@
 //!         context: Arc::new(context),
 //!         crd_api: Api::namespaced(client, "default"),
 //!     };
-//!
-//!     reconciler.start(Some(10)).await;
-//!
 //!
 //!     // Start the reconciler, which will handle the reconciliation loop synchronously.
 //!     reconciler.start(None).await;
@@ -144,7 +151,7 @@
 //! signal. You can pass a future that resolves when you want to shut down the reconciler, like an OS
 //! signal, e.g. `SIGTERM`.
 //!
-//! ```rust
+//! ```rust,ignore
 //! use tokio::signal;
 //! use futures::select;
 //!
@@ -283,7 +290,7 @@
 //! }
 //!
 //! // And implement the `WithStatusError` trait that links your error and status error
-//! impl WithStatusError<MyError, MyStatusError> for AtlasClusterStatus {
+//! impl WithStatusError<MyError, MyStatusError> for MyStatus {
 //!     fn add(&mut self, error: MyStatusError) {
 //!         self.error = Some(error);
 //!     }
@@ -298,7 +305,9 @@
 //! your error type.
 //!
 
+pub mod cache;
 pub mod error;
+pub mod k8s;
 
 use std::error::Error as StdError;
 use std::fmt::Debug;
@@ -323,7 +332,6 @@ use kube::runtime::reflector::ObjectRef;
 use kube::runtime::watcher::Config;
 use kube::runtime::Controller;
 use kube::Api;
-use kube::Client;
 use kube::Resource;
 use kube::ResourceExt;
 use schemars::JsonSchema;
@@ -331,6 +339,7 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::cache::ProvideApi;
 use crate::error::Error;
 use crate::error::Result;
 
@@ -343,12 +352,13 @@ type ReconciliationResult<R, RE, QE> = StdResult<(ObjectRef<R>, Action), KubeCon
 /// The user needs to implement the [Reconcile::destruct] method as well as a component F that
 /// implements [Finalize] and a component C that implements [Context] and uses component F.
 #[async_trait]
-pub trait Reconcile<R, C, F>: Sized
+pub trait Reconcile<R, C, F, P>: Sized
 where
     R: Resource<Scope = NamespaceResourceScope> + Serialize + DeserializeOwned + Debug + Clone + Send + Sync + 'static,
     R::DynamicType: Default + Eq + Hash + Clone + Debug + Unpin,
-    C: Context<R, F> + 'static,
-    F: Finalize<R>,
+    C: Context<R, F, P> + 'static,
+    F: Finalize<R, P>,
+    P: ProvideApi<R> + 'static,
 {
     /// Starts the controller and runs the reconciliation loop, where as reconciliations run
     /// synchronously. If you want asynchronous reconciliations, use [Reconcile::start_concurrent].
@@ -442,11 +452,12 @@ where
 
 /// The Context trait takes care of the apply and cleanup logic of a resource.
 #[async_trait]
-pub trait Context<R, F>: Send + Sync
+pub trait Context<R, F, P>: Send + Sync
 where
     R: Resource<Scope = NamespaceResourceScope> + Serialize + DeserializeOwned + Debug + Clone + Send + Sync + 'static,
     R::DynamicType: Default,
-    F: Finalize<R>,
+    F: Finalize<R, P>,
+    P: ProvideApi<R>,
 {
     /// Handles a successful reconciliation of a resource.
     ///
@@ -514,13 +525,14 @@ where
 /// This component needs to be implemented by a struct that is used by the [Context] component,
 /// something like a k8s repository, as it interacts with the k8s api directly.
 #[async_trait]
-pub trait Finalize<R>: Send + Sync
+pub trait Finalize<R, P>: Send + Sync
 where
     R: Resource<Scope = NamespaceResourceScope> + Serialize + DeserializeOwned + Debug + Clone + Send + Sync + 'static,
     R::DynamicType: Default,
+    P: ProvideApi<R>,
 {
-    /// Returns the k8s client that is used to interact with the k8s api.
-    fn client(&self) -> Client;
+    /// Returns the provider for k8s Api.
+    fn api_provider(&self) -> &P;
 
     /// Delegates the finalization logic to the [kube::runtime::finalizer::finalizer] function
     /// of the kube runtime by utilizing the reconcile function injected by the [Context].
@@ -538,7 +550,7 @@ where
         ReconcileFut: TryFuture<Ok = Action> + Send,
         ReconcileFut::Error: StdError + Send + 'static,
     {
-        let api = Api::<R>::namespaced(self.client(), &object.try_namespace()?);
+        let api = self.api_provider().get(&object.try_namespace()?)?;
         finalizer(&api, finalizer_name, object, reconcile)
             .await
             .map_err(Error::from)
@@ -551,7 +563,7 @@ where
     where
         S: Serialize + ObserveGeneration + Debug + Send + Sync,
     {
-        let api = Api::<R>::namespaced(self.client(), &object.try_namespace()?);
+        let api = self.api_provider().get(&object.try_namespace()?)?;
 
         status.with_observed_gen(object.meta());
         let new_status = Status { status };
