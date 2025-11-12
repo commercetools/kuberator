@@ -41,17 +41,20 @@
 //! // The core of the operator is the implementation of the `Reconcile` trait, which requires
 //! // us to first implement the `Context` and `Finalize` traits for certain structs.
 //!
-//! // The `Finalize` trait will be implemented on a Kubernetes repository-like structure
-//! // and is responsible for handling the finalizer logic.
-//! struct MyK8sRepo {
-//!     api_provider: StaticApiProvider<MyCrd>,
-//! }
+//! // Option 1: Use the generic K8sRepository (recommended for simple cases)
+//! use kuberator::k8s::K8sRepository;
+//! type MyK8sRepo = K8sRepository<MyCrd, StaticApiProvider<MyCrd>>;
 //!
-//! impl Finalize<MyCrd> for MyK8sRepo {
-//!     fn api(&self) -> &impl ProvideApi<MyCrd> {
-//!         &self.api_provider
-//!     }
-//! }
+//! // Option 2: Create a custom repository (if you need custom state or methods)
+//! // struct MyK8sRepo {
+//! //     api_provider: StaticApiProvider<MyCrd>,
+//! // }
+//! //
+//! // impl Finalize<MyCrd, StaticApiProvider<MyCrd>> for MyK8sRepo {
+//! //     fn api_provider(&self) -> &StaticApiProvider<MyCrd> {
+//! //         &self.api_provider
+//! //     }
+//! // }
 //!
 //! // The `Context` trait must be implemented on a struct that serves as the core of the
 //! // operator. It contains the logic for handling the custom resource object, including
@@ -61,11 +64,11 @@
 //! }
 //!
 //! #[async_trait]
-//! impl Context<MyCrd, MyK8sRepo> for MyContext {
+//! impl Context<MyCrd, MyK8sRepo, StaticApiProvider<MyCrd>> for MyContext {
 //!     // The only requirement is to provide a unique finalizer name and an Arc to an
 //!     // implementation of the `Finalize` trait.
 //!     fn k8s_repository(&self) -> Arc<MyK8sRepo> {
-//!         self.repo.clone()
+//!         Arc::clone(&self.repo)
 //!     }
 //!
 //!     fn finalizer(&self) -> &'static str {
@@ -103,7 +106,7 @@
 //! }
 //!
 //! #[async_trait]
-//! impl Reconcile<MyCrd, MyContext, MyK8sRepo> for MyReconciler {
+//! impl Reconcile<MyCrd, MyContext, MyK8sRepo, StaticApiProvider<MyCrd>> for MyReconciler {
 //!     fn destruct(self) -> (Api<MyCrd>, Config, Arc<MyContext>) {
 //!         (self.crd_api, Config::default(), self.context)
 //!     }
@@ -116,9 +119,15 @@
 //! async fn main() -> anyhow::Result<()> {
 //!     let client = Client::try_default().await?;
 //!
-//!     let k8s_repo = MyK8sRepo {
-//!         api_provider: StaticApiProvider::new(client.clone(), vec!["default"]),
-//!     };
+//!     // Using the generic K8sRepository:
+//!     let api_provider = StaticApiProvider::new(client.clone(), vec!["default"]);
+//!     let k8s_repo = K8sRepository::new(api_provider);
+//!
+//!     // Or if using custom repository:
+//!     // let k8s_repo = MyK8sRepo {
+//!     //     api_provider: StaticApiProvider::new(client.clone(), vec!["default"]),
+//!     // };
+//!
 //!     let context = MyContext {
 //!         repo: Arc::new(k8s_repo),
 //!     };
@@ -298,6 +307,7 @@
 
 pub mod cache;
 pub mod error;
+pub mod k8s;
 
 use std::error::Error as StdError;
 use std::fmt::Debug;
@@ -522,7 +532,7 @@ where
     P: ProvideApi<R>,
 {
     /// Returns the provider for k8s Api.
-    fn api(&self) -> &P;
+    fn api_provider(&self) -> &P;
 
     /// Delegates the finalization logic to the [kube::runtime::finalizer::finalizer] function
     /// of the kube runtime by utilizing the reconcile function injected by the [Context].
@@ -540,7 +550,7 @@ where
         ReconcileFut: TryFuture<Ok = Action> + Send,
         ReconcileFut::Error: StdError + Send + 'static,
     {
-        let api = self.api().get(&object.try_namespace()?)?;
+        let api = self.api_provider().get(&object.try_namespace()?)?;
         finalizer(&api, finalizer_name, object, reconcile)
             .await
             .map_err(Error::from)
@@ -553,7 +563,7 @@ where
     where
         S: Serialize + ObserveGeneration + Debug + Send + Sync,
     {
-        let api = self.api().get(&object.try_namespace()?)?;
+        let api = self.api_provider().get(&object.try_namespace()?)?;
 
         status.with_observed_gen(object.meta());
         let new_status = Status { status };

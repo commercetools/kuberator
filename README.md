@@ -17,6 +17,7 @@ use kube::Api;
 use kube::Client;
 use kube::CustomResource;
 use kuberator::cache::StaticApiProvider;
+use kuberator::k8s::K8sRepository;
 use kuberator::error::Result as KubeResult;
 use kuberator::Context;
 use kuberator::Finalize;
@@ -43,17 +44,19 @@ pub struct MySpec {
 // The core of the operator is the implementation of the [Reconcile] trait, which requires
 // us to first implement the [Context] and [Finalize] traits for certain structs.
 
-// The [Finalize] trait will be implemented on a Kubernetes repository-like structure
-// and is responsible for handling the finalizer logic.
-struct MyK8sRepo {
-    api_provider: StaticApiProvider<MyCrd>,
-}
+// Option 1: Use the generic K8sRepository (recommended for simple cases)
+type MyK8sRepo = K8sRepository<MyCrd, StaticApiProvider<MyCrd>>;
 
-impl Finalize<MyCrd, StaticApiProvider<MyCrd>> for MyK8sRepo {
-    fn api(&self) -> &StaticApiProvider<MyCrd> {
-        &self.api_provider
-    }
-}
+// Option 2: Create a custom repository (if you need custom state or methods)
+// struct MyK8sRepo {
+//     api_provider: StaticApiProvider<MyCrd>,
+// }
+//
+// impl Finalize<MyCrd, StaticApiProvider<MyCrd>> for MyK8sRepo {
+//     fn api_provider(&self) -> &StaticApiProvider<MyCrd> {
+//         &self.api_provider
+//     }
+// }
 
 // The [Context] trait must be implemented on a struct that serves as the core of the
 // operator. It contains the logic for handling the custom resource object, including
@@ -67,7 +70,7 @@ impl Context<MyCrd, MyK8sRepo, StaticApiProvider<MyCrd>> for MyContext {
     // The only requirement is to provide a unique finalizer name and an Arc to an
     // implementation of the [Finalize] trait.
     fn k8s_repository(&self) -> Arc<MyK8sRepo> {
-        self.repo.clone()
+        Arc::clone(&self.repo)
     }
 
     fn finalizer(&self) -> &'static str {
@@ -118,9 +121,15 @@ impl Reconcile<MyCrd, MyContext, MyK8sRepo, StaticApiProvider<MyCrd>> for MyReco
 async fn main() -> anyhow::Result<()> {
     let client = Client::try_default().await?;
 
-    let k8s_repo = MyK8sRepo {
-        api_provider: StaticApiProvider::new(client.clone(), vec!["default"]),
-    };
+    // Using the generic K8sRepository:
+    let api_provider = StaticApiProvider::new(client.clone(), vec!["default"]);
+    let k8s_repo = K8sRepository::new(api_provider);
+
+    // Or if using custom repository:
+    // let k8s_repo = MyK8sRepo {
+    //     api_provider: StaticApiProvider::new(client.clone(), vec!["default"]),
+    // };
+
     let context = MyContext {
         repo: Arc::new(k8s_repo),
     };

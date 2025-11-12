@@ -14,16 +14,16 @@ use serde::de::DeserializeOwned;
 use crate::error::Error;
 use crate::error::Result;
 
-/// Abstraction for obtaining [Api] instances, allowing different caching strategies.
+/// Abstraction for obtaining [`kube::Api`] instances, allowing different caching strategies.
 ///
-/// This trait decouples the [Finalize] trait from the specific caching implementation,
+/// This trait decouples the [`crate::Finalize`] trait from the specific caching implementation,
 /// enabling you to choose the optimal strategy for your operator without changing your
 /// reconciliation logic.
 ///
 /// # Implementations
 ///
-/// - [StaticApiProvider] - Lock-free, pre-populated cache (fastest, recommended when namespaces are known)
-/// - [CachedApiProvider] - RwLock-based, lazy-loading cache (flexible, for dynamic namespaces)
+/// - [`StaticApiProvider`] - Lock-free, pre-populated cache (fastest, recommended when namespaces are known)
+/// - [`CachedApiProvider`] - RwLock-based, lazy-loading cache (flexible, for dynamic namespaces)
 ///
 /// # Example
 ///
@@ -51,13 +51,13 @@ where
     R: Resource<Scope = NamespaceResourceScope> + Clone + DeserializeOwned + Debug + Send + Sync + 'static,
     R::DynamicType: Default,
 {
-    /// Gets an [Arc<Api>] instance for the given namespace.
+    /// Gets an [`Arc<Api>`] instance for the given namespace.
     ///
-    /// Returns an error if the namespace is not available (e.g., not in the cache for [StaticApiProvider]).
+    /// Returns an error if the namespace is not available (e.g., not in the cache for [`StaticApiProvider`]).
     fn get(&self, namespace: &str) -> Result<Arc<Api<R>>>;
 }
 
-/// A helper struct that caches [Arc<Api>] instances per namespace to avoid repeatedly creating them.
+/// A helper struct that caches [`Arc<Api>`] instances per namespace to avoid repeatedly creating them.
 ///
 /// This is particularly useful when your operator frequently accesses the same namespaces,
 /// as it eliminates the overhead of creating new Api instances for each operation.
@@ -117,7 +117,7 @@ where
     R: Resource<Scope = NamespaceResourceScope> + Clone + DeserializeOwned + Debug + Send + Sync + 'static,
     R::DynamicType: Default,
 {
-    /// Gets or creates an [Arc<Api>] instance for the given namespace.
+    /// Gets or creates an [`Arc<Api>`] instance for the given namespace.
     ///
     /// This method first checks the cache for an existing Api instance. If found, it returns
     /// an Arc clone (just incrementing the reference count). If not found, it creates a new
