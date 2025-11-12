@@ -27,24 +27,24 @@ use crate::error::Result;
 ///
 /// # Example
 ///
-/// ```rust,ignore
-/// // Your repository can use any implementation
-/// struct MyK8sRepo<P: ProvideApi<MyCrd>> {
-///     client: Client,
+/// ```
+/// use kuberator::cache::{ProvideApi, StaticApiProvider, CachedApiProvider};
+/// use kuberator::Finalize;
+/// use k8s_openapi::api::core::v1::ConfigMap;
+///
+/// // Your repository can be generic over any ProvideApi implementation
+/// struct MyK8sRepo<P: ProvideApi<ConfigMap> + Send + Sync> {
 ///     api_provider: P,
 /// }
 ///
-/// impl<P: ProvideApi<MyCrd>> Finalize<MyCrd> for MyK8sRepo<P> {
-///     fn api(&self) -> &impl ProvideApi<MyCrd> {
+/// impl<P: ProvideApi<ConfigMap> + Send + Sync> Finalize<ConfigMap, P> for MyK8sRepo<P> {
+///     fn api_provider(&self) -> &P {
 ///         &self.api_provider
 ///     }
 /// }
 ///
-/// // Instantiate with your preferred strategy:
-/// let repo = MyK8sRepo {
-///     client: client.clone(),
-///     api_provider: StaticApiProvider::new(client, namespaces), // or CachedApiProvider
-/// };
+/// // This struct can be instantiated with either StaticApiProvider or CachedApiProvider
+/// // See their respective documentation for usage examples
 /// ```
 pub trait ProvideApi<R>
 where
@@ -74,17 +74,16 @@ where
 /// ```rust,ignore
 /// use kuberator::cache::CachedApiProvider;
 /// use kube::Client;
+/// use k8s_openapi::api::core::v1::ConfigMap;
 ///
 /// struct MyK8sRepo {
-///     client: Client,
-///     api_cache: CachedApiProvider<MyCrd>,
+///     api_cache: CachedApiProvider<ConfigMap>,
 /// }
 ///
 /// impl MyK8sRepo {
 ///     fn new(client: Client) -> Self {
 ///         Self {
 ///             api_cache: CachedApiProvider::new(client),
-///             client,
 ///         }
 ///     }
 /// }
@@ -131,9 +130,18 @@ where
     ///
     /// # Example
     ///
-    /// ```rust,ignore
-    /// let api = cache.get("default");
-    /// // api is Arc<Api<MyCrd>>, cloning it is very cheap
+    /// ```
+    /// # use kuberator::cache::{CachedApiProvider, ProvideApi};
+    /// # use k8s_openapi::api::core::v1::ConfigMap;
+    /// # use kube::Client;
+    /// # async fn example() -> kuberator::error::Result<()> {
+    /// # let client = Client::try_default().await.unwrap();
+    /// # let cache: CachedApiProvider<ConfigMap> = CachedApiProvider::new(client);
+    /// let api = cache.get("default")?;
+    /// // api is Arc<Api<ConfigMap>>, cloning it is very cheap
+    /// let api_clone = api.clone(); // Just increments reference count
+    /// # Ok(())
+    /// # }
     /// ```
     fn get(&self, namespace: &str) -> Result<Arc<Api<R>>> {
         // Fast path: try to get from cache with read lock
@@ -176,17 +184,16 @@ where
 /// ```rust,ignore
 /// use kuberator::cache::StaticApiProvider;
 /// use kube::Client;
+/// use k8s_openapi::api::core::v1::ConfigMap;
 ///
 /// struct MyK8sRepo {
-///     client: Client,
-///     api_cache: StaticApiProvider<MyCrd>,
+///     api_cache: StaticApiProvider<ConfigMap>,
 /// }
 ///
 /// impl MyK8sRepo {
 ///     fn new(client: Client, namespaces: Vec<String>) -> Self {
 ///         Self {
 ///             api_cache: StaticApiProvider::new(client, namespaces),
-///             client,
 ///         }
 ///     }
 /// }
@@ -210,9 +217,16 @@ where
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```
+    /// use kuberator::cache::StaticApiProvider;
+    /// use k8s_openapi::api::core::v1::ConfigMap;
+    /// # use kube::Client;
+    ///
+    /// # async fn example() {
+    /// # let client = Client::try_default().await.unwrap();
     /// let namespaces = vec!["default", "kube-system", "production"];
-    /// let cache = StaticApiProvider::new(client, namespaces);
+    /// let cache: StaticApiProvider<ConfigMap> = StaticApiProvider::new(client, namespaces);
+    /// # }
     /// ```
     pub fn new<I, S>(client: Client, namespaces: I) -> Self
     where

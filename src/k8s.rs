@@ -28,34 +28,45 @@ use crate::Finalize;
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```
 /// use kuberator::k8s::K8sRepository;
 /// use kuberator::cache::StaticApiProvider;
+/// use kuberator::{Finalize, Context};
+/// use k8s_openapi::api::core::v1::ConfigMap;
+/// # use std::sync::Arc;
+/// # use kube::runtime::controller::Action;
 ///
 /// // Without K8sRepository (manual implementation):
 /// struct MyK8sRepo {
-///     api_provider: StaticApiProvider<MyCrd>,
+///     api_provider: StaticApiProvider<ConfigMap>,
 /// }
 ///
-/// impl Finalize<MyCrd, StaticApiProvider<MyCrd>> for MyK8sRepo {
-///     fn api_provider(&self) -> &StaticApiProvider<MyCrd> {
+/// impl Finalize<ConfigMap, StaticApiProvider<ConfigMap>> for MyK8sRepo {
+///     fn api_provider(&self) -> &StaticApiProvider<ConfigMap> {
 ///         &self.api_provider
 ///     }
 /// }
 ///
 /// // With K8sRepository (zero boilerplate):
-/// type MyK8sRepo = K8sRepository<MyCrd, StaticApiProvider<MyCrd>>;
+/// type MyK8sRepoAlias = K8sRepository<ConfigMap, StaticApiProvider<ConfigMap>>;
 ///
 /// // Usage in Context:
 /// struct MyContext {
-///     repo: Arc<K8sRepository<MyCrd, StaticApiProvider<MyCrd>>>,
+///     repo: Arc<K8sRepository<ConfigMap, StaticApiProvider<ConfigMap>>>,
 /// }
 ///
-/// impl Context<MyCrd, K8sRepository<MyCrd, StaticApiProvider<MyCrd>>, StaticApiProvider<MyCrd>> for MyContext {
-///     fn k8s_repository(&self) -> Arc<K8sRepository<MyCrd, StaticApiProvider<MyCrd>>> {
+/// #[async_trait::async_trait]
+/// impl Context<ConfigMap, K8sRepository<ConfigMap, StaticApiProvider<ConfigMap>>, StaticApiProvider<ConfigMap>> for MyContext {
+///     fn k8s_repository(&self) -> Arc<K8sRepository<ConfigMap, StaticApiProvider<ConfigMap>>> {
 ///         Arc::clone(&self.repo)
 ///     }
-///     // ... rest of implementation
+///     fn finalizer(&self) -> &'static str { "example.com/finalizer" }
+///     async fn handle_apply(&self, object: Arc<ConfigMap>) -> kuberator::error::Result<Action> {
+///         Ok(Action::await_change())
+///     }
+///     async fn handle_cleanup(&self, object: Arc<ConfigMap>) -> kuberator::error::Result<Action> {
+///         Ok(Action::await_change())
+///     }
 /// }
 /// ```
 ///
@@ -90,12 +101,17 @@ where
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```
     /// use kuberator::k8s::K8sRepository;
     /// use kuberator::cache::StaticApiProvider;
+    /// use k8s_openapi::api::core::v1::ConfigMap;
+    /// # use kube::Client;
     ///
+    /// # async fn example() {
+    /// # let client = Client::try_default().await.unwrap();
     /// let api_provider = StaticApiProvider::new(client, vec!["default", "production"]);
-    /// let repo = K8sRepository::new(api_provider);
+    /// let repo: K8sRepository<ConfigMap, _> = K8sRepository::new(api_provider);
+    /// # }
     /// ```
     pub fn new(api_provider: P) -> Self {
         K8sRepository {
