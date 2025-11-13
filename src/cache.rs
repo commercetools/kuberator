@@ -14,6 +14,41 @@ use serde::de::DeserializeOwned;
 use crate::error::Error;
 use crate::error::Result;
 
+/// Defines how [StaticApiProvider] handles namespace cache misses.
+///
+/// Different strategies offer different trade-offs between strictness, performance, and flexibility.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CachingStrategy {
+    /// Only allow access to namespaces that were pre-cached during initialization.
+    ///
+    /// Returns an error if a namespace is not in the cache. This is the safest option
+    /// and guarantees no runtime Api allocations.
+    ///
+    /// **Performance**: Lock-free HashMap lookup (~5ns)
+    Strict,
+
+    /// Create Api instances on-the-fly for uncached namespaces without caching them.
+    ///
+    /// If a namespace is in the cache, returns the cached instance. Otherwise, creates
+    /// a new Api instance each time (not cached). Useful when you have a core set of
+    /// frequently-accessed namespaces but occasionally need to access others.
+    ///
+    /// **Performance**:
+    /// - Cached: Lock-free HashMap lookup (~5ns)
+    /// - Uncached: Api creation per call (~100ns)
+    Adhoc,
+
+    /// Lazily create and cache Api instances on first access (extendable cache).
+    ///
+    /// Similar to [CachedApiProvider], but can be pre-populated with known namespaces.
+    /// Uses RwLock for thread-safe dynamic caching.
+    ///
+    /// **Performance**:
+    /// - Cached: RwLock read + HashMap lookup (~10-15ns)
+    /// - First access: RwLock write + Api creation (~100ns, one-time per namespace)
+    Extendable,
+}
+
 /// Abstraction for obtaining [`kube::Api`] instances, allowing different caching strategies.
 ///
 /// This trait decouples the [`crate::Finalize`] trait from the specific caching implementation,
@@ -22,13 +57,14 @@ use crate::error::Result;
 ///
 /// # Implementations
 ///
-/// - [`StaticApiProvider`] - Lock-free, pre-populated cache (fastest, recommended when namespaces are known)
+/// - [`StaticApiProvider`] - Flexible provider supporting [Strict](CachingStrategy::Strict),
+///   [Adhoc](CachingStrategy::Adhoc), and [Extendable](CachingStrategy::Extendable) caching strategies
 /// - [`CachedApiProvider`] - RwLock-based, lazy-loading cache (flexible, for dynamic namespaces)
 ///
 /// # Example
 ///
 /// ```
-/// use kuberator::cache::{ProvideApi, StaticApiProvider, CachedApiProvider};
+/// use kuberator::cache::{ProvideApi, StaticApiProvider, CachedApiProvider, CachingStrategy};
 /// use kuberator::Finalize;
 /// use k8s_openapi::api::core::v1::ConfigMap;
 ///
@@ -43,7 +79,7 @@ use crate::error::Result;
 ///     }
 /// }
 ///
-/// // This struct can be instantiated with either StaticApiProvider or CachedApiProvider
+/// // This trait can be instantiated with different providers and strategies
 /// // See their respective documentation for usage examples
 /// ```
 pub trait ProvideApi<R>
@@ -53,7 +89,12 @@ where
 {
     /// Gets an [`Arc<Api>`] instance for the given namespace.
     ///
-    /// Returns an error if the namespace is not available (e.g., not in the cache for [`StaticApiProvider`]).
+    /// Returns an error if the namespace is not available. The exact behavior depends on
+    /// the implementation:
+    /// - [`StaticApiProvider`] with [Strict](CachingStrategy::Strict): Errors if not pre-cached
+    /// - [`StaticApiProvider`] with [Adhoc](CachingStrategy::Adhoc): Creates on-the-fly if not cached
+    /// - [`StaticApiProvider`] with [Extendable](CachingStrategy::Extendable): Creates and caches if not cached
+    /// - [`CachedApiProvider`]: Creates and caches on first access
     fn get(&self, namespace: &str) -> Result<Arc<Api<R>>>;
 }
 
@@ -167,43 +208,69 @@ where
     }
 }
 
-/// A static (immutable) API provider that pre-caches all namespace Api instances at construction.
+/// Internal storage backend for [StaticApiProvider] that adapts to different caching strategies.
+enum CacheStorage<R>
+where
+    R: Resource<Scope = NamespaceResourceScope> + Clone + DeserializeOwned + Debug + Send + Sync + 'static,
+    R::DynamicType: Default,
+{
+    /// Immutable HashMap for Strict and Adhoc strategies (no locking overhead)
+    Static(HashMap<String, Arc<Api<R>>>),
+    /// RwLock-protected HashMap for Extendable strategy (supports dynamic caching)
+    Dynamic(RwLock<HashMap<String, Arc<Api<R>>>>),
+}
+
+/// A flexible API provider supporting multiple caching strategies.
 ///
-/// Unlike [CachedApiProvider], this struct has **zero locking overhead** because the cache is
-/// never modified after construction. This makes it ideal when you know all namespaces upfront.
+/// Depending on the [CachingStrategy] chosen, this provider can behave as:
+/// - **Strict**: Lock-free, pre-populated cache (fastest, errors on unknown namespaces)
+/// - **Adhoc**: Lock-free for cached namespaces, creates Api on-the-fly for others (no caching of misses)
+/// - **Extendable**: RwLock-based lazy loading (like [CachedApiProvider], but can be pre-populated)
 ///
-/// # Performance Benefits
+/// # Performance by Strategy
 ///
-/// - **No locks**: Direct HashMap lookup with zero synchronization overhead
-/// - **Fastest possible**: Just HashMap lookup + Arc clone (< 5ns on modern CPUs)
-/// - **No contention**: Multiple threads can access without any coordination
-/// - **Predictable**: Every lookup has identical performance (no cache miss path)
+/// | Strategy   | Cached Access | Uncached Access | Locking |
+/// |------------|---------------|-----------------|---------|
+/// | Strict     | ~5ns          | Error           | None    |
+/// | Adhoc      | ~5ns          | ~100ns          | None    |
+/// | Extendable | ~10-15ns      | ~100ns (cached) | RwLock  |
 ///
 /// # Example
 ///
 /// ```rust,ignore
-/// use kuberator::cache::StaticApiProvider;
+/// use kuberator::cache::{StaticApiProvider, CachingStrategy};
 /// use kube::Client;
 /// use k8s_openapi::api::core::v1::ConfigMap;
 ///
-/// struct MyK8sRepo {
-///     api_cache: StaticApiProvider<ConfigMap>,
-/// }
+/// // Strict: Only allow pre-defined namespaces
+/// let strict = StaticApiProvider::new(
+///     client.clone(),
+///     vec!["default", "kube-system"],
+///     CachingStrategy::Strict
+/// );
 ///
-/// impl MyK8sRepo {
-///     fn new(client: Client, namespaces: Vec<String>) -> Self {
-///         Self {
-///             api_cache: StaticApiProvider::new(client, namespaces),
-///         }
-///     }
-/// }
+/// // Adhoc: Pre-cache common namespaces, create others on-the-fly
+/// let adhoc = StaticApiProvider::new(
+///     client.clone(),
+///     vec!["default"], // Common ones cached
+///     CachingStrategy::Adhoc // Others created as needed
+/// );
+///
+/// // Extendable: Start with known namespaces, dynamically cache new ones
+/// let extendable = StaticApiProvider::new(
+///     client.clone(),
+///     vec!["default"],
+///     CachingStrategy::Extendable // New namespaces cached on first access
+/// );
 /// ```
 pub struct StaticApiProvider<R>
 where
     R: Resource<Scope = NamespaceResourceScope> + Clone + DeserializeOwned + Debug + Send + Sync + 'static,
     R::DynamicType: Default,
 {
-    cache: HashMap<String, Arc<Api<R>>>,
+    client: Client,
+    strategy: CachingStrategy,
+    cache: CacheStorage<R>,
 }
 
 impl<R> StaticApiProvider<R>
@@ -211,35 +278,59 @@ where
     R: Resource<Scope = NamespaceResourceScope> + Clone + DeserializeOwned + Debug + Send + Sync + 'static,
     R::DynamicType: Default,
 {
-    /// Creates a new [StaticApiProvider] with Api instances pre-cached for the given namespaces.
+    /// Creates a new [StaticApiProvider] with the specified caching strategy.
     ///
-    /// After construction, the cache is immutable - no locking needed!
+    /// The behavior depends on the chosen [CachingStrategy]:
+    /// - **Strict**: Only allows access to pre-cached namespaces, errors otherwise
+    /// - **Adhoc**: Pre-caches given namespaces, creates others on-the-fly without caching
+    /// - **Extendable**: Pre-caches given namespaces, creates and caches others on first access
     ///
     /// # Example
     ///
     /// ```
-    /// use kuberator::cache::StaticApiProvider;
+    /// use kuberator::cache::{StaticApiProvider, CachingStrategy};
     /// use k8s_openapi::api::core::v1::ConfigMap;
     /// # use kube::Client;
     ///
     /// # async fn example() {
     /// # let client = Client::try_default().await.unwrap();
-    /// let namespaces = vec!["default", "kube-system", "production"];
-    /// let cache: StaticApiProvider<ConfigMap> = StaticApiProvider::new(client, namespaces);
+    /// // Strict mode - only these namespaces allowed
+    /// let strict: StaticApiProvider<ConfigMap> = StaticApiProvider::new(
+    ///     client.clone(),
+    ///     vec!["default", "kube-system"],
+    ///     CachingStrategy::Strict
+    /// );
+    ///
+    /// // Adhoc mode - these cached, others created on demand
+    /// let adhoc: StaticApiProvider<ConfigMap> = StaticApiProvider::new(
+    ///     client.clone(),
+    ///     vec!["default"],
+    ///     CachingStrategy::Adhoc
+    /// );
     /// # }
     /// ```
-    pub fn new<I, S>(client: Client, namespaces: I) -> Self
+    pub fn new<I, S>(client: Client, namespaces: I, strategy: CachingStrategy) -> Self
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let mut cache = HashMap::new();
+        let mut map = HashMap::new();
+
         for namespace in namespaces {
             let api = Arc::new(Api::<R>::namespaced(client.clone(), namespace.as_ref()));
-            cache.insert(namespace.as_ref().to_string(), api);
+            map.insert(namespace.as_ref().to_string(), api);
         }
 
-        Self { cache }
+        let cache = match strategy {
+            CachingStrategy::Strict | CachingStrategy::Adhoc => CacheStorage::Static(map),
+            CachingStrategy::Extendable => CacheStorage::Dynamic(RwLock::new(map)),
+        };
+
+        Self {
+            client,
+            strategy,
+            cache,
+        }
     }
 }
 
@@ -248,17 +339,66 @@ where
     R: Resource<Scope = NamespaceResourceScope> + Clone + DeserializeOwned + Debug + Send + Sync + 'static,
     R::DynamicType: Default,
 {
-    /// Gets the Api instance for the given namespace.
+    /// Gets an Api instance for the given namespace according to the configured [CachingStrategy].
     ///
-    /// Returns an error if the namespace wasn't in the initial set provided to [StaticApiProvider::new].
+    /// # Behavior by Strategy
     ///
-    /// This operation has **zero locking overhead** - just a HashMap lookup and Arc clone.
+    /// - **Strict**: Returns cached Api or error if namespace not pre-cached
+    /// - **Adhoc**: Returns cached Api if available, otherwise creates new Api without caching
+    /// - **Extendable**: Returns cached Api if available, otherwise creates, caches, and returns new Api
+    ///
+    /// # Performance
+    ///
+    /// - **Strict/Adhoc (cache hit)**: ~5ns (lock-free HashMap lookup)
+    /// - **Adhoc (cache miss)**: ~100ns (Api creation, not cached)
+    /// - **Extendable (cache hit)**: ~10-15ns (RwLock read + HashMap lookup)
+    /// - **Extendable (cache miss)**: ~100ns (RwLock write + Api creation, one-time per namespace)
     fn get(&self, namespace: &str) -> Result<Arc<Api<R>>> {
-        self.cache.get(namespace).map(Arc::clone).ok_or_else(|| {
-            Error::UserInputError(format!(
-                "Namespace '{}' not found in static cache. Did you include it during initialization?",
-                namespace
-            ))
-        })
+        match (&self.cache, self.strategy) {
+            // Strict: Only return pre-cached namespaces
+            (CacheStorage::Static(map), CachingStrategy::Strict) => {
+                map.get(namespace).map(Arc::clone).ok_or_else(|| {
+                    Error::UserInputError(format!(
+                        "Namespace '{namespace}' not found in static cache. Did you include it during initialization?"
+                    ))
+                })
+            }
+
+            // Adhoc: Return cached if available, otherwise create on-the-fly (don't cache)
+            (CacheStorage::Static(map), CachingStrategy::Adhoc) => {
+                if let Some(api) = map.get(namespace) {
+                    return Ok(Arc::clone(api));
+                }
+
+                Ok(Arc::new(Api::<R>::namespaced(self.client.clone(), namespace)))
+            }
+
+            // Extendable: Return cached if available, otherwise create and cache
+            (CacheStorage::Dynamic(lock), CachingStrategy::Extendable) => {
+                // Fast path: try to get from cache with read lock
+                {
+                    let cache = lock.read()?;
+                    if let Some(api) = cache.get(namespace) {
+                        return Ok(Arc::clone(api));
+                    }
+                }
+
+                // Slow path: create and cache with write lock
+                let mut cache = lock.write()?;
+
+                // Double-check in case another thread created it while we waited
+                if let Some(api) = cache.get(namespace) {
+                    return Ok(Arc::clone(api));
+                }
+
+                let api = Arc::new(Api::<R>::namespaced(self.client.clone(), namespace));
+                cache.insert(namespace.to_string(), Arc::clone(&api));
+
+                Ok(api)
+            }
+
+            // Invalid state combinations (shouldn't happen with correct construction)
+            _ => Err(Error::InvalidApiProviderConfig),
+        }
     }
 }

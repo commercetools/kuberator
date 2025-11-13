@@ -15,6 +15,7 @@
 //! use kube::Client;
 //! use kube::CustomResource;
 //! use kuberator::cache::StaticApiProvider;
+//! use kuberator::cache::CachingStrategy;
 //! use kuberator::error::Result as KubeResult;
 //! use kuberator::Context;
 //! use kuberator::Finalize;
@@ -120,12 +121,20 @@
 //!     let client = Client::try_default().await?;
 //!
 //!     // Using the generic K8sRepository:
-//!     let api_provider = StaticApiProvider::new(client.clone(), vec!["default"]);
+//!     let api_provider = StaticApiProvider::new(
+//!         client.clone(),
+//!         vec!["default"],
+//!         CachingStrategy::Strict
+//!     );
 //!     let k8s_repo = K8sRepository::new(api_provider);
 //!
 //!     // Or if using custom repository:
 //!     // let k8s_repo = MyK8sRepo {
-//!     //     api_provider: StaticApiProvider::new(client.clone(), vec!["default"]),
+//!     //     api_provider: StaticApiProvider::new(
+//!     //         client.clone(),
+//!     //         vec!["default"],
+//!     //         CachingStrategy::Strict
+//!     //     ),
 //!     // };
 //!
 //!     let context = MyContext {
