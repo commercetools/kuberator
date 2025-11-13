@@ -947,4 +947,244 @@ mod tests {
             panic!("Expected UserInputError");
         }
     }
+
+    // ==================== Tests for Finalize, Context, Reconcile ====================
+
+    use crate::cache::{CachingStrategy, StaticApiProvider};
+    use kube::client::Body;
+    use kube::runtime::controller::Action;
+    use kube::CustomResource;
+    use kube::{Api, Client};
+    use std::time::Duration;
+    use tower_test::mock;
+
+    #[derive(CustomResource, Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
+    #[kube(
+        group = "test.kuberator.io",
+        version = "v1",
+        kind = "TestResource",
+        plural = "testresources",
+        namespaced
+    )]
+    struct TestResourceSpec {
+        value: String,
+    }
+
+    #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
+    #[allow(dead_code)]
+    struct TestResourceStatus {
+        state: String,
+        observed_generation: Option<i64>,
+    }
+
+    impl ObserveGeneration for TestResourceStatus {
+        fn add(&mut self, observed_generation: i64) {
+            self.observed_generation = Some(observed_generation);
+        }
+    }
+
+    struct MockFinalize {
+        api_provider: StaticApiProvider<TestResource>,
+    }
+
+    #[async_trait]
+    impl Finalize<TestResource, StaticApiProvider<TestResource>> for MockFinalize {
+        fn api_provider(&self) -> &StaticApiProvider<TestResource> {
+            &self.api_provider
+        }
+    }
+
+    struct MockContext {
+        finalize: Arc<MockFinalize>,
+        apply_called: Arc<std::sync::Mutex<bool>>,
+        cleanup_called: Arc<std::sync::Mutex<bool>>,
+    }
+
+    #[async_trait]
+    impl Context<TestResource, MockFinalize, StaticApiProvider<TestResource>> for MockContext {
+        fn k8s_repository(&self) -> Arc<MockFinalize> {
+            Arc::clone(&self.finalize)
+        }
+
+        fn finalizer(&self) -> &'static str {
+            "test.kuberator.io/finalizer"
+        }
+
+        async fn handle_apply(&self, _object: Arc<TestResource>) -> Result<Action> {
+            *self.apply_called.lock().unwrap() = true;
+            Ok(Action::await_change())
+        }
+
+        async fn handle_cleanup(&self, _object: Arc<TestResource>) -> Result<Action> {
+            *self.cleanup_called.lock().unwrap() = true;
+            Ok(Action::await_change())
+        }
+    }
+
+    fn test_client_for_traits() -> Client {
+        let (mock_service, _handle) = mock::pair::<http::Request<Body>, http::Response<hyper::body::Incoming>>();
+        Client::new(mock_service, "default")
+    }
+
+    #[tokio::test]
+    async fn test_finalize_api_provider() {
+        // Given: A MockFinalize with a StaticApiProvider
+        let client = test_client_for_traits();
+        let api_provider = StaticApiProvider::new(client, vec!["default"], CachingStrategy::Strict);
+        let finalize = MockFinalize { api_provider };
+
+        // When: Calling api_provider()
+        let provider = finalize.api_provider();
+
+        // Then: Should return a reference to the provider
+        let result = provider.get("default");
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_context_k8s_repository() {
+        // Given: A MockContext with a MockFinalize
+        let client = test_client_for_traits();
+        let api_provider = StaticApiProvider::new(client, vec!["default"], CachingStrategy::Strict);
+        let finalize = Arc::new(MockFinalize { api_provider });
+        let context = MockContext {
+            finalize: Arc::clone(&finalize),
+            apply_called: Arc::new(std::sync::Mutex::new(false)),
+            cleanup_called: Arc::new(std::sync::Mutex::new(false)),
+        };
+
+        // When: Calling k8s_repository()
+        let repo = context.k8s_repository();
+
+        // Then: Should return the repository
+        assert!(repo.api_provider().get("default").is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_context_finalizer() {
+        // Given: A MockContext
+        let client = test_client_for_traits();
+        let api_provider = StaticApiProvider::new(client, vec!["default"], CachingStrategy::Strict);
+        let finalize = Arc::new(MockFinalize { api_provider });
+        let context = MockContext {
+            finalize,
+            apply_called: Arc::new(std::sync::Mutex::new(false)),
+            cleanup_called: Arc::new(std::sync::Mutex::new(false)),
+        };
+
+        // When: Calling finalizer()
+        let finalizer_name = context.finalizer();
+
+        // Then: Should return the correct finalizer name
+        assert_eq!(finalizer_name, "test.kuberator.io/finalizer");
+    }
+
+    #[tokio::test]
+    async fn test_context_handle_apply() {
+        // Given: A MockContext and a test resource
+        let client = test_client_for_traits();
+        let api_provider = StaticApiProvider::new(client, vec!["default"], CachingStrategy::Strict);
+        let finalize = Arc::new(MockFinalize { api_provider });
+        let apply_called = Arc::new(std::sync::Mutex::new(false));
+        let context = MockContext {
+            finalize,
+            apply_called: Arc::clone(&apply_called),
+            cleanup_called: Arc::new(std::sync::Mutex::new(false)),
+        };
+
+        let test_resource = TestResource::new(
+            "test-resource",
+            TestResourceSpec {
+                value: "test-value".to_string(),
+            },
+        );
+
+        // When: Calling handle_apply
+        let result = context.handle_apply(Arc::new(test_resource)).await;
+
+        // Then: Should succeed and mark apply as called
+        assert!(result.is_ok());
+        assert!(*apply_called.lock().unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_context_handle_cleanup() {
+        // Given: A MockContext and a test resource
+        let client = test_client_for_traits();
+        let api_provider = StaticApiProvider::new(client, vec!["default"], CachingStrategy::Strict);
+        let finalize = Arc::new(MockFinalize { api_provider });
+        let cleanup_called = Arc::new(std::sync::Mutex::new(false));
+        let context = MockContext {
+            finalize,
+            apply_called: Arc::new(std::sync::Mutex::new(false)),
+            cleanup_called: Arc::clone(&cleanup_called),
+        };
+
+        let test_resource = TestResource::new(
+            "test-resource",
+            TestResourceSpec {
+                value: "test-value".to_string(),
+            },
+        );
+
+        // When: Calling handle_cleanup
+        let result = context.handle_cleanup(Arc::new(test_resource)).await;
+
+        // Then: Should succeed and mark cleanup as called
+        assert!(result.is_ok());
+        assert!(*cleanup_called.lock().unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_context_handle_error() {
+        // Given: A MockContext, an error, and a test resource
+        let client = test_client_for_traits();
+        let api_provider = StaticApiProvider::new(client, vec!["default"], CachingStrategy::Strict);
+        let finalize = Arc::new(MockFinalize { api_provider });
+        let context = MockContext {
+            finalize,
+            apply_called: Arc::new(std::sync::Mutex::new(false)),
+            cleanup_called: Arc::new(std::sync::Mutex::new(false)),
+        };
+
+        let test_resource = TestResource::new(
+            "test-resource",
+            TestResourceSpec {
+                value: "test-value".to_string(),
+            },
+        );
+        let error = Error::UserInputError("Test error".to_string());
+
+        // When: Calling handle_error with requeue duration
+        let action = context.handle_error(Arc::new(test_resource.clone()), &error, Some(Duration::from_secs(30)));
+
+        // Then: Should return requeue action with the specified duration
+        let expected_requeue = Action::requeue(Duration::from_secs(30));
+        assert_eq!(action, expected_requeue);
+
+        // When: Calling handle_error without requeue
+        let action_no_requeue = context.handle_error(Arc::new(test_resource), &error, None);
+
+        // Then: Should return await_change action
+        let expected_await_change = Action::await_change();
+        assert_eq!(action_no_requeue, expected_await_change);
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_requeue_after_error_seconds() {
+        // Mock Reconcile implementation
+        struct MockReconcile;
+
+        impl Reconcile<TestResource, MockContext, MockFinalize, StaticApiProvider<TestResource>> for MockReconcile {
+            fn destruct(self) -> (Api<TestResource>, kube::runtime::watcher::Config, Arc<MockContext>) {
+                unimplemented!("Not needed for this test")
+            }
+        }
+
+        // When: Calling requeue_after_error_seconds with default implementation
+        let duration = MockReconcile::requeue_after_error_seconds();
+
+        // Then: Should return the default 60 seconds
+        assert_eq!(duration, Some(Duration::from_secs(60)));
+    }
 }
