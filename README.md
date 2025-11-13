@@ -158,6 +158,46 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
+## Caching Strategies
+
+Kuberator provides flexible API caching strategies through the `CachingStrategy` enum to optimize
+performance based on your deployment requirements:
+
+### `CachingStrategy::Strict` (Recommended for Production)
+- **Lock-free** - Zero contention, fastest possible (~5ns per lookup)
+- Pre-caches all specified namespaces at startup
+- Returns error if accessing uncached namespace
+- **Use when**: All namespaces are known upfront in production deployments
+
+```rust
+StaticApiProvider::new(client, vec!["default", "production"], CachingStrategy::Strict)
+```
+
+### `CachingStrategy::Adhoc`
+- **Lock-free** - Pre-caches specified namespaces (~5ns), creates others on-the-fly (~100ns)
+- Like Strict but doesn't error on uncached namespaces - creates them as needed
+- APIs are NOT cached after creation (created fresh each time)
+- **Use when**: You know some namespaces upfront but need flexibility for others
+
+```rust
+// Pre-cache common namespaces, allow others dynamically
+StaticApiProvider::new(client, vec!["default", "production"], CachingStrategy::Adhoc)
+```
+
+### `CachingStrategy::Extendable`
+- **RwLock-based** - Lazy loading with automatic caching (~10-15ns after first access)
+- Caches new namespaces as they're discovered
+- **Use when**: Namespaces are discovered at runtime but will be reused
+
+```rust
+StaticApiProvider::new(client, vec!["default"], CachingStrategy::Extendable)
+```
+
+For advanced use cases, consider using `CachedApiProvider` which provides dynamic namespace
+discovery with RwLock-based lazy loading.
+
+## Graceful Shutdown
+
 The second parameter of the `start` and `start_concurrent` methods is an optional graceful shutdown
 signal. You can pass a future that resolves when you want to shut down the reconciler, like an OS
 signal, e.g. `SIGTERM`.

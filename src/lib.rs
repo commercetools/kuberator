@@ -439,8 +439,66 @@ where
         Some(Duration::from_secs(REQUEUE_AFTER_ERROR_SECONDS))
     }
 
-    /// Destructs components from the implementing struct that are injected into the
-    /// controller in the [Reconcile::start] method.
+    /// Destructs components from the implementing struct that are injected into the controller.
+    ///
+    /// This method consumes `self` and extracts the three components needed to start the controller:
+    /// - [`Api<R>`] - The Kubernetes API client for the resource type
+    /// - [`Config`] - The watcher configuration (usually [`Config::default()`])
+    /// - [`Arc<C>`] - The shared context containing reconciliation logic
+    ///
+    /// # Purpose
+    ///
+    /// The controller needs to take ownership of these components to manage the reconciliation loop.
+    /// By consuming the reconciler struct, we ensure clean separation between setup and runtime phases.
+    ///
+    /// # Config Customization
+    ///
+    /// While [`Config::default()`] works for most cases, you can customize it to:
+    /// - Filter resources by labels: `Config::default().labels("app=myapp")`
+    /// - Filter by fields: `Config::default().fields("metadata.name=myresource")`
+    /// - Adjust debounce: `Config::default().debounce(Duration::from_secs(5))`
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use std::sync::Arc;
+    /// # use kube::{Api, Client};
+    /// # use kube::runtime::watcher::Config;
+    /// # use k8s_openapi::api::core::v1::ConfigMap;
+    /// # use async_trait::async_trait;
+    /// # use kuberator::{Reconcile, Context};
+    /// # use kuberator::cache::StaticApiProvider;
+    /// # use kuberator::k8s::K8sRepository;
+    /// # type MyK8sRepo = K8sRepository<ConfigMap, StaticApiProvider<ConfigMap>>;
+    /// # struct MyContext { repo: Arc<MyK8sRepo> }
+    /// # #[async_trait]
+    /// # impl Context<ConfigMap, MyK8sRepo, StaticApiProvider<ConfigMap>> for MyContext {
+    /// #     fn k8s_repository(&self) -> Arc<MyK8sRepo> { Arc::clone(&self.repo) }
+    /// #     fn finalizer(&self) -> &'static str { "example/finalizer" }
+    /// #     async fn handle_apply(&self, _: Arc<ConfigMap>) -> kuberator::error::Result<kube::runtime::controller::Action> {
+    /// #         Ok(kube::runtime::controller::Action::await_change())
+    /// #     }
+    /// #     async fn handle_cleanup(&self, _: Arc<ConfigMap>) -> kuberator::error::Result<kube::runtime::controller::Action> {
+    /// #         Ok(kube::runtime::controller::Action::await_change())
+    /// #     }
+    /// # }
+    /// struct MyReconciler {
+    ///     context: Arc<MyContext>,
+    ///     crd_api: Api<ConfigMap>,
+    /// }
+    ///
+    /// #[async_trait]
+    /// impl Reconcile<ConfigMap, MyContext, MyK8sRepo, StaticApiProvider<ConfigMap>> for MyReconciler {
+    ///     fn destruct(self) -> (Api<ConfigMap>, Config, Arc<MyContext>) {
+    ///         // Default configuration - watches all resources
+    ///         (self.crd_api, Config::default(), self.context)
+    ///
+    ///         // Or with custom configuration:
+    ///         // let config = Config::default().labels("app=myapp");
+    ///         // (self.crd_api, config, self.context)
+    ///     }
+    /// }
+    /// ```
     fn destruct(self) -> (Api<R>, Config, Arc<C>);
 }
 
