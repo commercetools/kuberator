@@ -22,6 +22,8 @@ pub enum Error {
     Finalizer(#[from] FinalizerError),
     #[error("RwLock poisoned: {0}")]
     RwLockPoisoned(String),
+    #[error("Invalid ApiProvider configuration")]
+    InvalidApiProviderConfig,
 
     /// Can be used for implementors of kuberators to return their errors
     #[error(transparent)]

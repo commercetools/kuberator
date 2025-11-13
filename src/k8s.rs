@@ -103,13 +103,17 @@ where
     ///
     /// ```
     /// use kuberator::k8s::K8sRepository;
-    /// use kuberator::cache::StaticApiProvider;
+    /// use kuberator::cache::{StaticApiProvider, CachingStrategy};
     /// use k8s_openapi::api::core::v1::ConfigMap;
     /// # use kube::Client;
     ///
     /// # async fn example() {
     /// # let client = Client::try_default().await.unwrap();
-    /// let api_provider = StaticApiProvider::new(client, vec!["default", "production"]);
+    /// let api_provider = StaticApiProvider::new(
+    ///     client,
+    ///     vec!["default", "production"],
+    ///     CachingStrategy::Strict
+    /// );
     /// let repo: K8sRepository<ConfigMap, _> = K8sRepository::new(api_provider);
     /// # }
     /// ```
