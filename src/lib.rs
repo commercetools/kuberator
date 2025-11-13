@@ -683,3 +683,508 @@ where
         }))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use k8s_openapi::api::core::v1::ConfigMap;
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+    use schemars::JsonSchema;
+    use serde::{Deserialize, Serialize};
+
+    // Test structs for ObserveGeneration
+    #[derive(Debug, Clone)]
+    struct TestStatus {
+        #[allow(dead_code)]
+        state: String,
+        observed_generation: Option<i64>,
+    }
+
+    impl ObserveGeneration for TestStatus {
+        fn add(&mut self, observed_generation: i64) {
+            self.observed_generation = Some(observed_generation);
+        }
+    }
+
+    // Test structs for AsStatusError and WithStatusError
+    #[derive(Debug, PartialEq, Clone)]
+    enum TestError {
+        NotFound,
+        InvalidInput(String),
+    }
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, JsonSchema)]
+    struct TestStatusError {
+        message: String,
+        code: i32,
+    }
+
+    impl AsStatusError<TestStatusError> for TestError {
+        fn as_status_error(&self) -> TestStatusError {
+            match self {
+                TestError::NotFound => TestStatusError {
+                    message: "Resource not found".to_string(),
+                    code: 404,
+                },
+                TestError::InvalidInput(msg) => TestStatusError {
+                    message: format!("Invalid input: {}", msg),
+                    code: 400,
+                },
+            }
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct TestStatusWithError {
+        #[allow(dead_code)]
+        state: String,
+        error: Option<TestStatusError>,
+    }
+
+    impl WithStatusError<TestError, TestStatusError> for TestStatusWithError {
+        fn add(&mut self, error: TestStatusError) {
+            self.error = Some(error);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_observe_generation_add() {
+        // Given: A test status object with no observed generation
+        let mut status = TestStatus {
+            state: "Running".to_string(),
+            observed_generation: None,
+        };
+
+        // When: Adding an observed generation
+        status.add(42);
+
+        // Then: The observed generation should be set
+        assert_eq!(status.observed_generation, Some(42));
+    }
+
+    #[tokio::test]
+    async fn test_observe_generation_with_observed_gen() {
+        // Given: A test status object and metadata with a generation
+        let mut status = TestStatus {
+            state: "Running".to_string(),
+            observed_generation: None,
+        };
+        let meta = ObjectMeta {
+            generation: Some(123),
+            ..Default::default()
+        };
+
+        // When: Calling with_observed_gen
+        status.with_observed_gen(&meta);
+
+        // Then: The observed generation should be extracted from metadata
+        assert_eq!(status.observed_generation, Some(123));
+    }
+
+    #[tokio::test]
+    async fn test_observe_generation_with_observed_gen_no_generation() {
+        // Given: A test status object and metadata without a generation
+        let mut status = TestStatus {
+            state: "Running".to_string(),
+            observed_generation: None,
+        };
+        let meta = ObjectMeta {
+            generation: None,
+            ..Default::default()
+        };
+
+        // When: Calling with_observed_gen
+        status.with_observed_gen(&meta);
+
+        // Then: The observed generation should remain None
+        assert_eq!(status.observed_generation, None);
+    }
+
+    #[tokio::test]
+    async fn test_as_status_error_not_found() {
+        // Given: A TestError::NotFound error
+        let error = TestError::NotFound;
+
+        // When: Converting to status error
+        let status_error = error.as_status_error();
+
+        // Then: Should produce correct status error
+        assert_eq!(status_error.message, "Resource not found");
+        assert_eq!(status_error.code, 404);
+    }
+
+    #[tokio::test]
+    async fn test_as_status_error_invalid_input() {
+        // Given: A TestError::InvalidInput error with a message
+        let error = TestError::InvalidInput("Bad format".to_string());
+
+        // When: Converting to status error
+        let status_error = error.as_status_error();
+
+        // Then: Should produce correct status error with formatted message
+        assert_eq!(status_error.message, "Invalid input: Bad format");
+        assert_eq!(status_error.code, 400);
+    }
+
+    #[tokio::test]
+    async fn test_with_status_error_add() {
+        // Given: A test status object without error
+        let mut status = TestStatusWithError {
+            state: "Running".to_string(),
+            error: None,
+        };
+        let error = TestStatusError {
+            message: "Something went wrong".to_string(),
+            code: 500,
+        };
+
+        // When: Adding a status error
+        status.add(error.clone());
+
+        // Then: The error should be added to status
+        assert_eq!(status.error, Some(error));
+    }
+
+    #[tokio::test]
+    async fn test_with_status_error_with_status_error() {
+        // Given: A test status object without error and a TestError
+        let mut status = TestStatusWithError {
+            state: "Running".to_string(),
+            error: None,
+        };
+        let error = TestError::InvalidInput("Missing field".to_string());
+
+        // When: Converting and adding the error using with_status_error
+        status.with_status_error(&error);
+
+        // Then: The error should be converted and added to status
+        assert!(status.error.is_some());
+        let status_error = status.error.unwrap();
+        assert_eq!(status_error.message, "Invalid input: Missing field");
+        assert_eq!(status_error.code, 400);
+    }
+
+    #[tokio::test]
+    async fn test_try_resource_try_name_success() {
+        // Given: A ConfigMap with a name
+        let config_map = ConfigMap {
+            metadata: ObjectMeta {
+                name: Some("my-config".to_string()),
+                namespace: Some("default".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        // When: Calling try_name
+        let result = config_map.try_name();
+
+        // Then: Should return the name
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "my-config");
+    }
+
+    #[tokio::test]
+    async fn test_try_resource_try_name_unnamed() {
+        // Given: A ConfigMap without a name
+        let config_map = ConfigMap {
+            metadata: ObjectMeta {
+                name: None,
+                namespace: Some("default".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        // When: Calling try_name
+        let result = config_map.try_name();
+
+        // Then: Should return UnnamedObject error
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::UnnamedObject));
+    }
+
+    #[tokio::test]
+    async fn test_try_resource_try_namespace_success() {
+        // Given: A ConfigMap with a namespace
+        let config_map = ConfigMap {
+            metadata: ObjectMeta {
+                name: Some("my-config".to_string()),
+                namespace: Some("production".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        // When: Calling try_namespace
+        let result = config_map.try_namespace();
+
+        // Then: Should return the namespace
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "production");
+    }
+
+    #[tokio::test]
+    async fn test_try_resource_try_namespace_missing() {
+        // Given: A ConfigMap without a namespace
+        let config_map = ConfigMap {
+            metadata: ObjectMeta {
+                name: Some("my-config".to_string()),
+                namespace: None,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        // When: Calling try_namespace
+        let result = config_map.try_namespace();
+
+        // Then: Should return UserInputError
+        assert!(result.is_err());
+        if let Err(Error::UserInputError(msg)) = result {
+            assert!(msg.contains("Expected resource to be namespaced"));
+        } else {
+            panic!("Expected UserInputError");
+        }
+    }
+
+    // ==================== Tests for Finalize, Context, Reconcile ====================
+
+    use crate::cache::{CachingStrategy, StaticApiProvider};
+    use kube::client::Body;
+    use kube::runtime::controller::Action;
+    use kube::CustomResource;
+    use kube::{Api, Client};
+    use std::time::Duration;
+    use tower_test::mock;
+
+    #[derive(CustomResource, Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
+    #[kube(
+        group = "test.kuberator.io",
+        version = "v1",
+        kind = "TestResource",
+        plural = "testresources",
+        namespaced
+    )]
+    struct TestResourceSpec {
+        value: String,
+    }
+
+    #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
+    #[allow(dead_code)]
+    struct TestResourceStatus {
+        state: String,
+        observed_generation: Option<i64>,
+    }
+
+    impl ObserveGeneration for TestResourceStatus {
+        fn add(&mut self, observed_generation: i64) {
+            self.observed_generation = Some(observed_generation);
+        }
+    }
+
+    struct MockFinalize {
+        api_provider: StaticApiProvider<TestResource>,
+    }
+
+    #[async_trait]
+    impl Finalize<TestResource, StaticApiProvider<TestResource>> for MockFinalize {
+        fn api_provider(&self) -> &StaticApiProvider<TestResource> {
+            &self.api_provider
+        }
+    }
+
+    struct MockContext {
+        finalize: Arc<MockFinalize>,
+        apply_called: Arc<std::sync::Mutex<bool>>,
+        cleanup_called: Arc<std::sync::Mutex<bool>>,
+    }
+
+    #[async_trait]
+    impl Context<TestResource, MockFinalize, StaticApiProvider<TestResource>> for MockContext {
+        fn k8s_repository(&self) -> Arc<MockFinalize> {
+            Arc::clone(&self.finalize)
+        }
+
+        fn finalizer(&self) -> &'static str {
+            "test.kuberator.io/finalizer"
+        }
+
+        async fn handle_apply(&self, _object: Arc<TestResource>) -> Result<Action> {
+            *self.apply_called.lock().unwrap() = true;
+            Ok(Action::await_change())
+        }
+
+        async fn handle_cleanup(&self, _object: Arc<TestResource>) -> Result<Action> {
+            *self.cleanup_called.lock().unwrap() = true;
+            Ok(Action::await_change())
+        }
+    }
+
+    fn test_client_for_traits() -> Client {
+        let (mock_service, _handle) = mock::pair::<http::Request<Body>, http::Response<hyper::body::Incoming>>();
+        Client::new(mock_service, "default")
+    }
+
+    #[tokio::test]
+    async fn test_finalize_api_provider() {
+        // Given: A MockFinalize with a StaticApiProvider
+        let client = test_client_for_traits();
+        let api_provider = StaticApiProvider::new(client, vec!["default"], CachingStrategy::Strict);
+        let finalize = MockFinalize { api_provider };
+
+        // When: Calling api_provider()
+        let provider = finalize.api_provider();
+
+        // Then: Should return a reference to the provider
+        let result = provider.get("default");
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_context_k8s_repository() {
+        // Given: A MockContext with a MockFinalize
+        let client = test_client_for_traits();
+        let api_provider = StaticApiProvider::new(client, vec!["default"], CachingStrategy::Strict);
+        let finalize = Arc::new(MockFinalize { api_provider });
+        let context = MockContext {
+            finalize: Arc::clone(&finalize),
+            apply_called: Arc::new(std::sync::Mutex::new(false)),
+            cleanup_called: Arc::new(std::sync::Mutex::new(false)),
+        };
+
+        // When: Calling k8s_repository()
+        let repo = context.k8s_repository();
+
+        // Then: Should return the repository
+        assert!(repo.api_provider().get("default").is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_context_finalizer() {
+        // Given: A MockContext
+        let client = test_client_for_traits();
+        let api_provider = StaticApiProvider::new(client, vec!["default"], CachingStrategy::Strict);
+        let finalize = Arc::new(MockFinalize { api_provider });
+        let context = MockContext {
+            finalize,
+            apply_called: Arc::new(std::sync::Mutex::new(false)),
+            cleanup_called: Arc::new(std::sync::Mutex::new(false)),
+        };
+
+        // When: Calling finalizer()
+        let finalizer_name = context.finalizer();
+
+        // Then: Should return the correct finalizer name
+        assert_eq!(finalizer_name, "test.kuberator.io/finalizer");
+    }
+
+    #[tokio::test]
+    async fn test_context_handle_apply() {
+        // Given: A MockContext and a test resource
+        let client = test_client_for_traits();
+        let api_provider = StaticApiProvider::new(client, vec!["default"], CachingStrategy::Strict);
+        let finalize = Arc::new(MockFinalize { api_provider });
+        let apply_called = Arc::new(std::sync::Mutex::new(false));
+        let context = MockContext {
+            finalize,
+            apply_called: Arc::clone(&apply_called),
+            cleanup_called: Arc::new(std::sync::Mutex::new(false)),
+        };
+
+        let test_resource = TestResource::new(
+            "test-resource",
+            TestResourceSpec {
+                value: "test-value".to_string(),
+            },
+        );
+
+        // When: Calling handle_apply
+        let result = context.handle_apply(Arc::new(test_resource)).await;
+
+        // Then: Should succeed and mark apply as called
+        assert!(result.is_ok());
+        assert!(*apply_called.lock().unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_context_handle_cleanup() {
+        // Given: A MockContext and a test resource
+        let client = test_client_for_traits();
+        let api_provider = StaticApiProvider::new(client, vec!["default"], CachingStrategy::Strict);
+        let finalize = Arc::new(MockFinalize { api_provider });
+        let cleanup_called = Arc::new(std::sync::Mutex::new(false));
+        let context = MockContext {
+            finalize,
+            apply_called: Arc::new(std::sync::Mutex::new(false)),
+            cleanup_called: Arc::clone(&cleanup_called),
+        };
+
+        let test_resource = TestResource::new(
+            "test-resource",
+            TestResourceSpec {
+                value: "test-value".to_string(),
+            },
+        );
+
+        // When: Calling handle_cleanup
+        let result = context.handle_cleanup(Arc::new(test_resource)).await;
+
+        // Then: Should succeed and mark cleanup as called
+        assert!(result.is_ok());
+        assert!(*cleanup_called.lock().unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_context_handle_error() {
+        // Given: A MockContext, an error, and a test resource
+        let client = test_client_for_traits();
+        let api_provider = StaticApiProvider::new(client, vec!["default"], CachingStrategy::Strict);
+        let finalize = Arc::new(MockFinalize { api_provider });
+        let context = MockContext {
+            finalize,
+            apply_called: Arc::new(std::sync::Mutex::new(false)),
+            cleanup_called: Arc::new(std::sync::Mutex::new(false)),
+        };
+
+        let test_resource = TestResource::new(
+            "test-resource",
+            TestResourceSpec {
+                value: "test-value".to_string(),
+            },
+        );
+        let error = Error::UserInputError("Test error".to_string());
+
+        // When: Calling handle_error with requeue duration
+        let action = context.handle_error(Arc::new(test_resource.clone()), &error, Some(Duration::from_secs(30)));
+
+        // Then: Should return requeue action with the specified duration
+        let expected_requeue = Action::requeue(Duration::from_secs(30));
+        assert_eq!(action, expected_requeue);
+
+        // When: Calling handle_error without requeue
+        let action_no_requeue = context.handle_error(Arc::new(test_resource), &error, None);
+
+        // Then: Should return await_change action
+        let expected_await_change = Action::await_change();
+        assert_eq!(action_no_requeue, expected_await_change);
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_requeue_after_error_seconds() {
+        // Mock Reconcile implementation
+        struct MockReconcile;
+
+        impl Reconcile<TestResource, MockContext, MockFinalize, StaticApiProvider<TestResource>> for MockReconcile {
+            fn destruct(self) -> (Api<TestResource>, kube::runtime::watcher::Config, Arc<MockContext>) {
+                unimplemented!("Not needed for this test")
+            }
+        }
+
+        // When: Calling requeue_after_error_seconds with default implementation
+        let duration = MockReconcile::requeue_after_error_seconds();
+
+        // Then: Should return the default 60 seconds
+        assert_eq!(duration, Some(Duration::from_secs(60)));
+    }
+}
