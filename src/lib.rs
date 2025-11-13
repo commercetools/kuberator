@@ -683,3 +683,268 @@ where
         }))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use k8s_openapi::api::core::v1::ConfigMap;
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+    use schemars::JsonSchema;
+    use serde::{Deserialize, Serialize};
+
+    // Test structs for ObserveGeneration
+    #[derive(Debug, Clone)]
+    struct TestStatus {
+        #[allow(dead_code)]
+        state: String,
+        observed_generation: Option<i64>,
+    }
+
+    impl ObserveGeneration for TestStatus {
+        fn add(&mut self, observed_generation: i64) {
+            self.observed_generation = Some(observed_generation);
+        }
+    }
+
+    // Test structs for AsStatusError and WithStatusError
+    #[derive(Debug, PartialEq, Clone)]
+    enum TestError {
+        NotFound,
+        InvalidInput(String),
+    }
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, JsonSchema)]
+    struct TestStatusError {
+        message: String,
+        code: i32,
+    }
+
+    impl AsStatusError<TestStatusError> for TestError {
+        fn as_status_error(&self) -> TestStatusError {
+            match self {
+                TestError::NotFound => TestStatusError {
+                    message: "Resource not found".to_string(),
+                    code: 404,
+                },
+                TestError::InvalidInput(msg) => TestStatusError {
+                    message: format!("Invalid input: {}", msg),
+                    code: 400,
+                },
+            }
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct TestStatusWithError {
+        #[allow(dead_code)]
+        state: String,
+        error: Option<TestStatusError>,
+    }
+
+    impl WithStatusError<TestError, TestStatusError> for TestStatusWithError {
+        fn add(&mut self, error: TestStatusError) {
+            self.error = Some(error);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_observe_generation_add() {
+        // Given: A test status object with no observed generation
+        let mut status = TestStatus {
+            state: "Running".to_string(),
+            observed_generation: None,
+        };
+
+        // When: Adding an observed generation
+        status.add(42);
+
+        // Then: The observed generation should be set
+        assert_eq!(status.observed_generation, Some(42));
+    }
+
+    #[tokio::test]
+    async fn test_observe_generation_with_observed_gen() {
+        // Given: A test status object and metadata with a generation
+        let mut status = TestStatus {
+            state: "Running".to_string(),
+            observed_generation: None,
+        };
+        let meta = ObjectMeta {
+            generation: Some(123),
+            ..Default::default()
+        };
+
+        // When: Calling with_observed_gen
+        status.with_observed_gen(&meta);
+
+        // Then: The observed generation should be extracted from metadata
+        assert_eq!(status.observed_generation, Some(123));
+    }
+
+    #[tokio::test]
+    async fn test_observe_generation_with_observed_gen_no_generation() {
+        // Given: A test status object and metadata without a generation
+        let mut status = TestStatus {
+            state: "Running".to_string(),
+            observed_generation: None,
+        };
+        let meta = ObjectMeta {
+            generation: None,
+            ..Default::default()
+        };
+
+        // When: Calling with_observed_gen
+        status.with_observed_gen(&meta);
+
+        // Then: The observed generation should remain None
+        assert_eq!(status.observed_generation, None);
+    }
+
+    #[tokio::test]
+    async fn test_as_status_error_not_found() {
+        // Given: A TestError::NotFound error
+        let error = TestError::NotFound;
+
+        // When: Converting to status error
+        let status_error = error.as_status_error();
+
+        // Then: Should produce correct status error
+        assert_eq!(status_error.message, "Resource not found");
+        assert_eq!(status_error.code, 404);
+    }
+
+    #[tokio::test]
+    async fn test_as_status_error_invalid_input() {
+        // Given: A TestError::InvalidInput error with a message
+        let error = TestError::InvalidInput("Bad format".to_string());
+
+        // When: Converting to status error
+        let status_error = error.as_status_error();
+
+        // Then: Should produce correct status error with formatted message
+        assert_eq!(status_error.message, "Invalid input: Bad format");
+        assert_eq!(status_error.code, 400);
+    }
+
+    #[tokio::test]
+    async fn test_with_status_error_add() {
+        // Given: A test status object without error
+        let mut status = TestStatusWithError {
+            state: "Running".to_string(),
+            error: None,
+        };
+        let error = TestStatusError {
+            message: "Something went wrong".to_string(),
+            code: 500,
+        };
+
+        // When: Adding a status error
+        status.add(error.clone());
+
+        // Then: The error should be added to status
+        assert_eq!(status.error, Some(error));
+    }
+
+    #[tokio::test]
+    async fn test_with_status_error_with_status_error() {
+        // Given: A test status object without error and a TestError
+        let mut status = TestStatusWithError {
+            state: "Running".to_string(),
+            error: None,
+        };
+        let error = TestError::InvalidInput("Missing field".to_string());
+
+        // When: Converting and adding the error using with_status_error
+        status.with_status_error(&error);
+
+        // Then: The error should be converted and added to status
+        assert!(status.error.is_some());
+        let status_error = status.error.unwrap();
+        assert_eq!(status_error.message, "Invalid input: Missing field");
+        assert_eq!(status_error.code, 400);
+    }
+
+    #[tokio::test]
+    async fn test_try_resource_try_name_success() {
+        // Given: A ConfigMap with a name
+        let config_map = ConfigMap {
+            metadata: ObjectMeta {
+                name: Some("my-config".to_string()),
+                namespace: Some("default".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        // When: Calling try_name
+        let result = config_map.try_name();
+
+        // Then: Should return the name
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "my-config");
+    }
+
+    #[tokio::test]
+    async fn test_try_resource_try_name_unnamed() {
+        // Given: A ConfigMap without a name
+        let config_map = ConfigMap {
+            metadata: ObjectMeta {
+                name: None,
+                namespace: Some("default".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        // When: Calling try_name
+        let result = config_map.try_name();
+
+        // Then: Should return UnnamedObject error
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::UnnamedObject));
+    }
+
+    #[tokio::test]
+    async fn test_try_resource_try_namespace_success() {
+        // Given: A ConfigMap with a namespace
+        let config_map = ConfigMap {
+            metadata: ObjectMeta {
+                name: Some("my-config".to_string()),
+                namespace: Some("production".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        // When: Calling try_namespace
+        let result = config_map.try_namespace();
+
+        // Then: Should return the namespace
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "production");
+    }
+
+    #[tokio::test]
+    async fn test_try_resource_try_namespace_missing() {
+        // Given: A ConfigMap without a namespace
+        let config_map = ConfigMap {
+            metadata: ObjectMeta {
+                name: Some("my-config".to_string()),
+                namespace: None,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        // When: Calling try_namespace
+        let result = config_map.try_namespace();
+
+        // Then: Should return UserInputError
+        assert!(result.is_err());
+        if let Err(Error::UserInputError(msg)) = result {
+            assert!(msg.contains("Expected resource to be namespaced"));
+        } else {
+            panic!("Expected UserInputError");
+        }
+    }
+}
