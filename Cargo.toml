@@ -24,3 +24,9 @@ log = { version = "0.4", features = ["kv", "kv_serde"] }
 
 thiserror = "2.0"
 anyhow = "1.0"
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["full"] }
+tower-test = "0.4"
+http = "1.0"
+hyper = "1.0"
