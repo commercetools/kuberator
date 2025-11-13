@@ -402,3 +402,203 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use k8s_openapi::api::core::v1::ConfigMap;
+    use kube::client::Body;
+    use kube::Client;
+    use std::sync::Arc;
+    use std::sync::Barrier;
+    use std::thread;
+    use tower_test::mock;
+
+    // This creates a client that doesn't require a real Kubernetes cluster
+    fn test_client() -> Client {
+        let (mock_service, _handle) = mock::pair::<http::Request<Body>, http::Response<hyper::body::Incoming>>();
+
+        Client::new(mock_service, "default")
+    }
+
+    #[tokio::test]
+    async fn test_static_provider_strict_cached_namespace() {
+        // Given: A StaticApiProvider with Strict strategy pre-caching two namespaces
+        let client = test_client();
+        let provider: StaticApiProvider<ConfigMap> =
+            StaticApiProvider::new(client, vec!["default", "kube-system"], CachingStrategy::Strict);
+
+        // When: Requesting pre-cached namespaces
+        let result_default = provider.get("default");
+        let result_kube_system = provider.get("kube-system");
+
+        // Then: Both requests should succeed
+        assert!(result_default.is_ok());
+        assert!(result_kube_system.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_static_provider_strict_uncached_namespace() {
+        // Given: A StaticApiProvider with Strict strategy pre-caching only one namespace
+        let client = test_client();
+        let provider: StaticApiProvider<ConfigMap> =
+            StaticApiProvider::new(client, vec!["default"], CachingStrategy::Strict);
+
+        // When: Requesting a namespace that was not pre-cached
+        let result = provider.get("unknown-namespace");
+
+        // Then: Should return an error with appropriate message
+        assert!(result.is_err());
+        if let Err(Error::UserInputError(msg)) = result {
+            assert!(msg.contains("unknown-namespace"));
+            assert!(msg.contains("not found in static cache"));
+        } else {
+            panic!("Expected UserInputError");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_static_provider_adhoc_cached_namespace() {
+        // Given: A StaticApiProvider with Adhoc strategy pre-caching two namespaces
+        let client = test_client();
+        let provider: StaticApiProvider<ConfigMap> =
+            StaticApiProvider::new(client, vec!["default", "kube-system"], CachingStrategy::Adhoc);
+
+        // When: Requesting a pre-cached namespace
+        let result = provider.get("default");
+
+        // Then: Request should succeed
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_static_provider_adhoc_uncached_namespace() {
+        // Given: A StaticApiProvider with Adhoc strategy pre-caching only one namespace
+        let client = test_client();
+        let provider: StaticApiProvider<ConfigMap> =
+            StaticApiProvider::new(client, vec!["default"], CachingStrategy::Adhoc);
+
+        // When: Requesting the same uncached namespace twice
+        let result1 = provider.get("unknown-namespace");
+        let result2 = provider.get("unknown-namespace");
+
+        // Then: Both requests should succeed
+        assert!(result1.is_ok());
+        assert!(result2.is_ok());
+
+        // And: The Arc pointers should be different (new Api created each time, not cached)
+        assert!(!Arc::ptr_eq(&result1.unwrap(), &result2.unwrap()));
+    }
+
+    #[tokio::test]
+    async fn test_static_provider_extendable_cached_namespace() {
+        // Given: A StaticApiProvider with Extendable strategy pre-caching two namespaces
+        let client = test_client();
+        let provider: StaticApiProvider<ConfigMap> =
+            StaticApiProvider::new(client, vec!["default", "kube-system"], CachingStrategy::Extendable);
+
+        // When: Requesting a pre-cached namespace
+        let result = provider.get("default");
+
+        // Then: Request should succeed
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_static_provider_extendable_uncached_namespace() {
+        // Given: A StaticApiProvider with Extendable strategy pre-caching only one namespace
+        let client = test_client();
+        let provider: StaticApiProvider<ConfigMap> =
+            StaticApiProvider::new(client, vec!["default"], CachingStrategy::Extendable);
+
+        // When: Requesting the same uncached namespace twice
+        let result1 = provider.get("new-namespace");
+        let result2 = provider.get("new-namespace");
+
+        // Then: Both requests should succeed
+        assert!(result1.is_ok());
+        assert!(result2.is_ok());
+
+        // And: The Arc pointers should be the same (cached after first access)
+        assert!(Arc::ptr_eq(&result1.unwrap(), &result2.unwrap()));
+    }
+
+    #[tokio::test]
+    async fn test_static_provider_extendable_thread_safety() {
+        // Given: A StaticApiProvider with Extendable strategy shared across 10 threads
+        let client = test_client();
+        let provider = Arc::new(StaticApiProvider::<ConfigMap>::new(
+            client,
+            vec!["default"],
+            CachingStrategy::Extendable,
+        ));
+
+        let num_threads = 10;
+        let barrier = Arc::new(Barrier::new(num_threads));
+        let mut handles = vec![];
+
+        // When: All threads simultaneously access the same uncached namespace
+        for _ in 0..num_threads {
+            let provider = Arc::clone(&provider);
+            let barrier = Arc::clone(&barrier);
+
+            let handle = thread::spawn(move || {
+                // Synchronize thread start to maximize contention
+                barrier.wait();
+                provider.get("concurrent-namespace")
+            });
+
+            handles.push(handle);
+        }
+
+        // Then: Collect all results
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+        // And: All threads should succeed
+        assert!(results.iter().all(|r| r.is_ok()));
+
+        // And: All should return the same cached Api instance (proves double-checked locking works)
+        let first_api = results[0].as_ref().unwrap();
+        for result in &results[1..] {
+            assert!(Arc::ptr_eq(first_api, result.as_ref().unwrap()));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_cached_provider_lazy_loading() {
+        // Given: A CachedApiProvider with no pre-cached namespaces
+        let client = test_client();
+        let provider: CachedApiProvider<ConfigMap> = CachedApiProvider::new(client);
+
+        // When: Requesting the same namespace twice
+        let result1 = provider.get("lazy-namespace");
+        let result2 = provider.get("lazy-namespace");
+
+        // Then: Both requests should succeed
+        assert!(result1.is_ok());
+        assert!(result2.is_ok());
+
+        // And: The Arc pointers should be the same (cached after first access)
+        assert!(Arc::ptr_eq(&result1.unwrap(), &result2.unwrap()));
+    }
+
+    #[tokio::test]
+    async fn test_cached_provider_multiple_namespaces() {
+        // Given: A CachedApiProvider with no pre-cached namespaces
+        let client = test_client();
+        let provider: CachedApiProvider<ConfigMap> = CachedApiProvider::new(client);
+
+        // When: Requesting multiple different namespaces, with one requested twice
+        let ns1 = provider.get("namespace-1");
+        let ns2 = provider.get("namespace-2");
+        let ns1_again = provider.get("namespace-1");
+
+        // Then: All requests should succeed
+        assert!(ns1.is_ok());
+        assert!(ns2.is_ok());
+        assert!(ns1_again.is_ok());
+
+        // And: The same namespace should return the same cached instance
+        assert!(Arc::ptr_eq(&ns1.unwrap(), &ns1_again.unwrap()));
+    }
+}
