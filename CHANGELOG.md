@@ -7,24 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2025-11-13
+
 ### Added
-- Comprehensive test suite with 92% code coverage
-- 14 tests for error.rs module (previously 0% coverage)
-- 8 tests for k8s.rs module
+- Comprehensive test suite with 93.55% code coverage
+- 14 tests for error.rs module (improved from 0% to 93.99% coverage)
 - Examples directory with three runnable examples:
   - `basic_operator.rs` - Minimal working operator
   - `with_status.rs` - Using ObserveGeneration pattern
   - `error_handling.rs` - Using WithStatusError pattern
 - Caching strategy documentation in README.md
-- Comprehensive documentation for `destruct()` method
+- Comprehensive documentation for `destruct()` method with Config customization examples
+- CHANGELOG.md following Keep a Changelog format
 
 ### Changed
-- Improved CLAUDE.md documentation to reflect actual API
 - Updated Cargo.toml description to "A Kubernetes operator framework in Rust"
+- Clarified caching strategy performance characteristics in documentation
+- Updated Adhoc strategy documentation to reflect that it pre-caches provided namespaces
 
 ### Fixed
 - Error message typo in error.rs (cleanup error said "apply" instead of "clean up")
-- Removed references to non-existent `update_status_static()` and `update_status_cached()` methods from CLAUDE.md
 
 ## [0.2.0] - 2025-03-01
 
@@ -87,7 +89,8 @@ see the [commit history](https://github.com/commercetools/kuberator/commits/main
 
 ---
 
-[Unreleased]: https://github.com/commercetools/kuberator/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/commercetools/kuberator/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/commercetools/kuberator/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/commercetools/kuberator/compare/v0.1.8...v0.2.0
 [0.1.8]: https://github.com/commercetools/kuberator/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/commercetools/kuberator/releases/tag/v0.1.7
