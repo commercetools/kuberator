@@ -178,6 +178,107 @@
 //! reconciler.start(Some(shutdown_signal)).await;
 //! ```
 //!
+//! ## Event Emission
+//!
+//! Kuberator provides generic Kubernetes event emission for observability through the [`events`] module.
+//! Events appear in `kubectl describe` output and provide visibility into operator operations.
+//!
+//! ### Defining Event Reasons
+//!
+//! First, define domain-specific event reasons using the [`events::Reason`] trait:
+//!
+//! ```rust,ignore
+//! use kuberator::events::Reason;
+//! use strum::{Display, AsRefStr};
+//!
+//! #[derive(Debug, Clone, Copy, Display, AsRefStr)]
+//! pub enum MyEventReason {
+//!     ResourceCreating,
+//!     ResourceCreated,
+//!     ReconciliationFailed,
+//! }
+//!
+//! impl Reason for MyEventReason {}
+//! ```
+//!
+//! ### Using EventRecorder
+//!
+//! ```rust,ignore
+//! use kuberator::events::{EventRecorder, EventData, EmitEvent};
+//! use kuberator::cache::StaticApiProvider;
+//! use k8s_openapi::api::core::v1::Event;
+//!
+//! // Setup event API provider (once at startup)
+//! let event_api_provider = Arc::new(StaticApiProvider::new(
+//!     client.clone(),
+//!     vec!["default"],
+//!     CachingStrategy::Adhoc,
+//! ));
+//!
+//! let event_recorder = Arc::new(EventRecorder::new(
+//!     event_api_provider,
+//!     "my-operator"  // Component name shown in events
+//! ));
+//!
+//! // Add to your Context
+//! struct MyContext {
+//!     repo: Arc<MyK8sRepo>,
+//!     event_recorder: Arc<EventRecorder<StaticApiProvider<Event>>>,
+//! }
+//!
+//! // Emit events in reconciliation
+//! impl Context<MyCrd, MyK8sRepo, StaticApiProvider<MyCrd>> for MyContext {
+//!     async fn handle_apply(&self, object: Arc<MyCrd>) -> KubeResult<Action> {
+//!         self.event_recorder.emit(
+//!             &*object,
+//!             EventData::normal(MyEventReason::ResourceCreating, "Starting resource creation")
+//!         ).await;
+//!
+//!         // ... do work ...
+//!
+//!         self.event_recorder.emit(
+//!             &*object,
+//!             EventData::normal(MyEventReason::ResourceCreated, "Resource created successfully")
+//!         ).await;
+//!
+//!         Ok(Action::await_change())
+//!     }
+//! }
+//! ```
+//!
+//! **Important:** Events never fail reconciliation. The `emit()` method logs errors as warnings
+//! but does not propagate them. Use `try_emit()` if you need explicit error handling.
+//!
+//! ### Testing with MockEventRecorder
+//!
+//! ```rust,ignore
+//! # use kuberator::events::{EventData, EmitEvent};
+//! # use kuberator::events::tests::MockEventRecorder;
+//! # use strum::{Display, AsRefStr};
+//! # #[derive(Debug, Clone, Copy, Display, AsRefStr, PartialEq)]
+//! # enum TestReason { Created }
+//! # impl kuberator::events::Reason for TestReason {}
+//! # use k8s_openapi::api::core::v1::ConfigMap;
+//! # use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+//! # tokio_test::block_on(async {
+//! let recorder = MockEventRecorder::<TestReason>::new();
+//! # let resource = ConfigMap {
+//! #     metadata: ObjectMeta {
+//! #         name: Some("test".into()),
+//! #         namespace: Some("default".into()),
+//! #         ..Default::default()
+//! #     },
+//! #     ..Default::default()
+//! # };
+//!
+//! recorder.emit(&resource, EventData::normal(TestReason::Created, "test")).await;
+//!
+//! let events = recorder.events();
+//! assert_eq!(events[0].1, TestReason::Created);
+//! # });
+//! ```
+//!
+//! See the [`events`] module documentation for more details and advanced usage.
 //!
 //! ## Error Handling
 //!
