@@ -19,7 +19,7 @@ use kube::{Api, Client, CustomResource};
 use kuberator::cache::{CachingStrategy, StaticApiProvider};
 use kuberator::error::Result as KubeResult;
 use kuberator::k8s::K8sRepository;
-use kuberator::{AsStatusError, Context, Finalize, ObserveGeneration, Reconcile, WithStatusError};
+use kuberator::{AsStatusError, Context, Finalize, ObserveGeneration, Reconcile, TryResource, WithStatusError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use thiserror::Error as ThisError;
@@ -140,18 +140,18 @@ impl Context<MyApp, MyK8sRepo, StaticApiProvider<MyApp>> for MyContext {
     }
 
     async fn handle_apply(&self, object: Arc<MyApp>) -> KubeResult<Action> {
-        let name = object.metadata.name.as_ref().unwrap();
-        let namespace = object.metadata.namespace.as_ref().unwrap();
+        let name = object.try_name()?;
+        let namespace = object.try_namespace()?;
 
-        log::info!("Reconciling MyApp {}/{}", namespace, name);
+        tracing::info!("Reconciling MyApp {}/{}", namespace, name);
 
         // Validate the spec
         match self.validate_spec(&object.spec) {
             Ok(_) => {
-                log::info!("Validation passed");
+                tracing::info!("Validation passed");
 
                 // Perform reconciliation
-                log::info!(
+                tracing::info!(
                     "Deploying {} replicas with image {}",
                     object.spec.replicas,
                     object.spec.image
@@ -169,7 +169,7 @@ impl Context<MyApp, MyK8sRepo, StaticApiProvider<MyApp>> for MyContext {
                 Ok(Action::await_change())
             }
             Err(e) => {
-                log::error!("Validation failed: {}", e);
+                tracing::error!("Validation failed: {}", e);
 
                 // Update status with error
                 let status = MyAppStatus {
@@ -178,9 +178,7 @@ impl Context<MyApp, MyK8sRepo, StaticApiProvider<MyApp>> for MyContext {
                     error: None, // Will be set by update_status_with_error
                 };
 
-                self.repo
-                    .update_status_with_error(&object, status, Some(&e))
-                    .await?;
+                self.repo.update_status_with_error(&object, status, Some(&e)).await?;
 
                 // Requeue after 60 seconds
                 Ok(Action::requeue(std::time::Duration::from_secs(60)))
@@ -189,10 +187,10 @@ impl Context<MyApp, MyK8sRepo, StaticApiProvider<MyApp>> for MyContext {
     }
 
     async fn handle_cleanup(&self, object: Arc<MyApp>) -> KubeResult<Action> {
-        let name = object.metadata.name.as_ref().unwrap();
-        let namespace = object.metadata.namespace.as_ref().unwrap();
+        let name = object.try_name()?;
+        let namespace = object.try_namespace()?;
 
-        log::info!("Cleaning up MyApp {}/{}", namespace, name);
+        tracing::info!("Cleaning up MyApp {}/{}", namespace, name);
 
         // Update status
         let status = MyAppStatus {
@@ -222,20 +220,21 @@ impl Reconcile<MyApp, MyContext, MyK8sRepo, StaticApiProvider<MyApp>> for MyReco
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize logging
-    env_logger::init();
+    // Initialize tracing
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
 
-    log::info!("Starting Error Handling Example");
+    tracing::info!("Starting Error Handling Example");
 
     // Create Kubernetes client
     let client = Client::try_default().await?;
 
     // Create API provider
-    let api_provider = StaticApiProvider::new(
-        client.clone(),
-        vec!["default"],
-        CachingStrategy::Strict,
-    );
+    let api_provider = StaticApiProvider::new(client.clone(), vec!["default"], CachingStrategy::Strict);
 
     // Create repository and context
     let k8s_repo = K8sRepository::new(api_provider);
@@ -249,9 +248,9 @@ async fn main() -> anyhow::Result<()> {
         crd_api: Api::namespaced(client, "default"),
     };
 
-    log::info!("Watching MyApps in 'default' namespace");
-    log::info!("This example requires the MyApp CRD to be installed");
-    log::info!("Try creating MyApps with invalid replicas (<1 or >10) to see error handling");
+    tracing::info!("Watching MyApps in 'default' namespace");
+    tracing::info!("This example requires the MyApp CRD to be installed");
+    tracing::info!("Try creating MyApps with invalid replicas (<1 or >10) to see error handling");
 
     // Start the reconciler
     reconciler.start::<futures::future::Ready<()>>(None).await;

@@ -170,8 +170,8 @@
 //!         .expect("Failed to install SIGTERM handler");
 //!
 //!     select! {
-//!         _ = interrupt => log::info!("Received SIGINT, shutting down"),
-//!         _ = terminate.recv() => log::info!("Received SIGTERM, shutting down"),
+//!         _ = interrupt => tracing::info!("Received SIGINT, shutting down"),
+//!         _ = terminate.recv() => tracing::info!("Received SIGTERM, shutting down"),
 //!     }
 //! };
 //!
@@ -505,12 +505,29 @@ where
 
     /// Callback method for the controller that is called when a resource is reconciled and that
     /// is hooked into [Reconcile::start].
+    #[tracing::instrument(
+        name = "kuberator.reconcile",
+        skip(resource, context),
+        fields(
+            resource_name = %resource.try_name().unwrap_or_default(),
+            resource_namespace = %resource.try_namespace().unwrap_or_default(),
+            resource_generation = %resource.meta().generation.unwrap_or(0),
+        )
+    )]
     async fn reconcile(resource: Arc<R>, context: Arc<C>) -> Result<Action> {
         Ok(context.handle_reconciliation(resource).await?)
     }
 
     /// Callback method for the controller that is called when an error occurs during
     /// reconciliation. The method is hooked into [Reconcile::start].
+    #[tracing::instrument(
+        name = "kuberator.error_policy",
+        skip(resource, error, context),
+        fields(
+            resource_name = %resource.try_name().unwrap_or_default(),
+            resource_namespace = %resource.try_namespace().unwrap_or_default(),
+        )
+    )]
     fn error_policy(resource: Arc<R>, error: &Error, context: Arc<C>) -> Action {
         context.handle_error(resource, error, Self::requeue_after_error_seconds())
     }
@@ -524,10 +541,10 @@ where
     {
         match reconciliation_result {
             Ok(resource) => {
-                log::info!("Reconciliation successful. Resource: {resource:?}");
+                tracing::info!("Reconciliation successful. Resource: {resource:?}");
             }
             Err(error) => {
-                log::error!("Reconciliation error: {error:?}");
+                tracing::error!("Reconciliation error: {error:?}");
             }
         }
     }
@@ -633,6 +650,16 @@ where
     /// The method is called by the controller in [Reconcile::start] when a resource is reconciled.
     /// The method takes care of the finalizers of the resource as well as the [Context::handle_apply]
     /// and [Context::handle_cleanup] logic.
+    #[tracing::instrument(
+        name = "kuberator.handle_reconciliation",
+        skip(self, object),
+        fields(
+            resource_name = %object.try_name().unwrap_or_default(),
+            resource_namespace = %object.try_namespace().unwrap_or_default(),
+            finalizer = %self.finalizer(),
+            has_deletion_timestamp = %object.meta().deletion_timestamp.is_some(),
+        )
+    )]
     async fn handle_reconciliation(&self, object: Arc<R>) -> Result<Action> {
         let action = self
             .k8s_repository()
@@ -658,7 +685,12 @@ where
     /// Feel free to override it in your struct implementing the [Context] trait to suit your
     /// specific needs.
     fn handle_error(&self, object: Arc<R>, error: &Error, requeue: Option<Duration>) -> Action {
-        log::error!(resource:serde = object; "Reconciliation error:\n{error:?}.");
+        tracing::error!(
+            resource_name = %object.try_name().unwrap_or_default(),
+            resource_namespace = %object.try_namespace().unwrap_or_default(),
+            error = ?error,
+            "Reconciliation error"
+        );
         requeue.map_or_else(Action::await_change, Action::requeue)
     }
 
@@ -709,6 +741,15 @@ where
     /// As this method is dealing with meta.finalizers of a component it might trigger
     /// a new reconiliation of the resource. This happens in case of the creation and the
     /// deletion of the resource.
+    #[tracing::instrument(
+        name = "kuberator.finalize",
+        skip(self, object, reconcile),
+        fields(
+            resource_name = %object.try_name().unwrap_or_default(),
+            resource_namespace = %object.try_namespace().unwrap_or_default(),
+            finalizer = %finalizer_name,
+        )
+    )]
     async fn finalize<ReconcileFut>(
         &self,
         finalizer_name: &str,
@@ -728,6 +769,15 @@ where
     /// Updates the status object of a resource.
     ///
     /// Updating the status does not trigger a new reconiliation loop.
+    #[tracing::instrument(
+        name = "kuberator.update_status",
+        skip(self, object, status),
+        fields(
+            resource_name = %object.try_name().unwrap_or_default(),
+            resource_namespace = %object.try_namespace().unwrap_or_default(),
+            resource_generation = %object.meta().generation.unwrap_or(0),
+        )
+    )]
     async fn update_status<S>(&self, object: &R, mut status: S) -> Result<()>
     where
         S: Serialize + ObserveGeneration + Debug + Send + Sync,
@@ -739,12 +789,23 @@ where
         api.patch_status(object.try_name()?, &PatchParams::default(), &Patch::Merge(&new_status))
             .await?;
 
+        tracing::debug!("Status updated successfully");
         Ok(())
     }
 
     /// Updates the status object of a resource with an optional error.
     ///
     /// Updating the status does not trigger a new reconiliation loop.
+    #[tracing::instrument(
+        name = "kuberator.update_status_with_error",
+        skip(self, object, status, error),
+        fields(
+            resource_name = %object.try_name().unwrap_or_default(),
+            resource_namespace = %object.try_namespace().unwrap_or_default(),
+            resource_generation = %object.meta().generation.unwrap_or(0),
+            has_error = %error.is_some(),
+        )
+    )]
     async fn update_status_with_error<S, A, E>(&self, object: &R, mut status: S, error: Option<&A>) -> Result<()>
     where
         S: Serialize + ObserveGeneration + WithStatusError<A, E> + Debug + Send + Sync,

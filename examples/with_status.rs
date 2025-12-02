@@ -19,7 +19,7 @@ use kube::{Api, Client, CustomResource};
 use kuberator::cache::{CachingStrategy, StaticApiProvider};
 use kuberator::error::Result as KubeResult;
 use kuberator::k8s::K8sRepository;
-use kuberator::{Context, Finalize, ObserveGeneration, Reconcile};
+use kuberator::{Context, Finalize, ObserveGeneration, Reconcile, TryResource};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -69,29 +69,25 @@ impl Context<MyResource, MyK8sRepo, StaticApiProvider<MyResource>> for MyContext
     }
 
     async fn handle_apply(&self, object: Arc<MyResource>) -> KubeResult<Action> {
-        let name = object.metadata.name.as_ref().unwrap();
-        let namespace = object.metadata.namespace.as_ref().unwrap();
+        let name = object.try_name()?;
+        let namespace = object.try_namespace()?;
 
-        log::info!(
-            "Reconciling MyResource {}/{}",
-            namespace,
-            name
-        );
+        tracing::info!("Reconciling MyResource {}/{}", namespace, name);
 
         // Check if we've already processed this generation
         if let Some(status) = &object.status {
             if let (Some(observed), Some(current)) = (status.observed_generation, object.metadata.generation) {
                 if observed >= current {
-                    log::info!("Already reconciled generation {}, skipping", current);
+                    tracing::info!("Already reconciled generation {}, skipping", current);
                     return Ok(Action::await_change());
                 }
             }
         }
 
-        log::info!("Processing new generation");
+        tracing::info!("Processing new generation");
 
         // Perform your reconciliation logic here
-        log::info!("Message: {}", object.spec.message);
+        tracing::info!("Message: {}", object.spec.message);
 
         // Update status with ObserveGeneration pattern
         let status = MyResourceStatus {
@@ -101,20 +97,16 @@ impl Context<MyResource, MyK8sRepo, StaticApiProvider<MyResource>> for MyContext
 
         self.repo.update_status(&object, status).await?;
 
-        log::info!("Status updated successfully");
+        tracing::info!("Status updated successfully");
 
         Ok(Action::await_change())
     }
 
     async fn handle_cleanup(&self, object: Arc<MyResource>) -> KubeResult<Action> {
-        let name = object.metadata.name.as_ref().unwrap();
-        let namespace = object.metadata.namespace.as_ref().unwrap();
+        let name = object.try_name()?;
+        let namespace = object.try_namespace()?;
 
-        log::info!(
-            "Cleaning up MyResource {}/{}",
-            namespace,
-            name
-        );
+        tracing::info!("Cleaning up MyResource {}/{}", namespace, name);
 
         // Update status before cleanup
         let status = MyResourceStatus {
@@ -143,20 +135,21 @@ impl Reconcile<MyResource, MyContext, MyK8sRepo, StaticApiProvider<MyResource>> 
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize logging
-    env_logger::init();
+    // Initialize tracing
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
 
-    log::info!("Starting Operator with Status Example");
+    tracing::info!("Starting Operator with Status Example");
 
     // Create Kubernetes client
     let client = Client::try_default().await?;
 
     // Create API provider
-    let api_provider = StaticApiProvider::new(
-        client.clone(),
-        vec!["default"],
-        CachingStrategy::Strict,
-    );
+    let api_provider = StaticApiProvider::new(client.clone(), vec!["default"], CachingStrategy::Strict);
 
     // Create repository and context
     let k8s_repo = K8sRepository::new(api_provider);
@@ -170,8 +163,8 @@ async fn main() -> anyhow::Result<()> {
         crd_api: Api::namespaced(client, "default"),
     };
 
-    log::info!("Watching MyResources in 'default' namespace");
-    log::info!("This example requires the MyResource CRD to be installed");
+    tracing::info!("Watching MyResources in 'default' namespace");
+    tracing::info!("This example requires the MyResource CRD to be installed");
 
     // Start the reconciler
     reconciler.start::<futures::future::Ready<()>>(None).await;
