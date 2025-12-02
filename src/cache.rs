@@ -358,7 +358,7 @@ where
             // Strict: Only return pre-cached namespaces
             (CacheStorage::Static(map), CachingStrategy::Strict) => {
                 map.get(namespace).map(Arc::clone).ok_or_else(|| {
-                    Error::UserInputError(format!(
+                    Error::UserInput(format!(
                         "Namespace '{namespace}' not found in static cache. Did you include it during initialization?"
                     ))
                 })
@@ -449,7 +449,7 @@ mod tests {
 
         // Then: Should return an error with appropriate message
         assert!(result.is_err());
-        if let Err(Error::UserInputError(msg)) = result {
+        if let Err(Error::UserInput(msg)) = result {
             assert!(msg.contains("unknown-namespace"));
             assert!(msg.contains("not found in static cache"));
         } else {

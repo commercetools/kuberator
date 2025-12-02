@@ -316,6 +316,7 @@
 
 pub mod cache;
 pub mod error;
+pub mod events;
 pub mod k8s;
 
 use std::error::Error as StdError;
@@ -736,7 +737,7 @@ where
     }
 
     fn try_namespace(&self) -> Result<String> {
-        self.namespace().ok_or(Error::UserInputError({
+        self.namespace().ok_or(Error::UserInput({
             "Expected resource to be namespaced. Can't deploy to an unknown namespace.".to_owned()
         }))
     }
@@ -999,7 +1000,7 @@ mod tests {
 
         // Then: Should return UserInputError
         assert!(result.is_err());
-        if let Err(Error::UserInputError(msg)) = result {
+        if let Err(Error::UserInput(msg)) = result {
             assert!(msg.contains("Expected resource to be namespaced"));
         } else {
             panic!("Expected UserInputError");
@@ -1211,7 +1212,7 @@ mod tests {
                 value: "test-value".to_string(),
             },
         );
-        let error = Error::UserInputError("Test error".to_string());
+        let error = Error::UserInput("Test error".to_string());
 
         // When: Calling handle_error with requeue duration
         let action = context.handle_error(Arc::new(test_resource.clone()), &error, Some(Duration::from_secs(30)));

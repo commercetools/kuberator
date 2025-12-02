@@ -10,12 +10,12 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     /// Any error originating from the `kube-rs` crate
     #[error("Kubernetes reported error: {source}")]
-    KubeError {
+    Kube {
         #[from]
         source: kube::Error,
     },
     #[error("{0}")]
-    UserInputError(String),
+    UserInput(String),
     #[error("Unnamed k8s object")]
     UnnamedObject,
     #[error(transparent)]
@@ -24,6 +24,8 @@ pub enum Error {
     RwLockPoisoned(String),
     #[error("Invalid ApiProvider configuration")]
     InvalidApiProviderConfig,
+    #[error("Failed to emit event: {0}")]
+    EmitEventFailed(String),
 
     /// Can be used for implementors of kuberators to return their errors
     #[error(transparent)]
@@ -86,7 +88,7 @@ mod tests {
         let error: Error = kube_err.into();
 
         // Then: Should be KubeError variant
-        assert!(matches!(error, Error::KubeError { .. }));
+        assert!(matches!(error, Error::Kube { .. }));
         assert!(error.to_string().contains("Kubernetes reported error"));
     }
 
@@ -96,7 +98,7 @@ mod tests {
         let message = "Invalid configuration".to_string();
 
         // When: Creating UserInputError
-        let error = Error::UserInputError(message.clone());
+        let error = Error::UserInput(message.clone());
 
         // Then: Should display the message
         assert_eq!(error.to_string(), message);
