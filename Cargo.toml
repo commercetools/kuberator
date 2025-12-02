@@ -1,6 +1,6 @@
 [package]
 name = "kuberator"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 authors = ["Mathias Oertel <mathias.oertel@gmail.com>"]
 description = "A Kubernetes operator framework in Rust"
