@@ -20,7 +20,7 @@ use kube::{Api, Client};
 use kuberator::cache::{CachingStrategy, StaticApiProvider};
 use kuberator::error::Result as KubeResult;
 use kuberator::k8s::K8sRepository;
-use kuberator::{Context, Reconcile};
+use kuberator::{Context, Reconcile, TryResource};
 
 // Type alias for our repository (using the generic K8sRepository)
 type MyK8sRepo = K8sRepository<ConfigMap, StaticApiProvider<ConfigMap>>;
@@ -41,14 +41,10 @@ impl Context<ConfigMap, MyK8sRepo, StaticApiProvider<ConfigMap>> for MyContext {
     }
 
     async fn handle_apply(&self, object: Arc<ConfigMap>) -> KubeResult<Action> {
-        let name = object.metadata.name.as_ref().unwrap();
-        let namespace = object.metadata.namespace.as_ref().unwrap();
+        let name = object.try_name()?;
+        let namespace = object.try_namespace()?;
 
-        log::info!(
-            "ConfigMap {}/{} was created or updated",
-            namespace,
-            name
-        );
+        tracing::info!("ConfigMap {}/{} was created or updated", namespace, name);
 
         // In a real operator, you would perform your reconciliation logic here:
         // - Create/update related resources
@@ -59,14 +55,10 @@ impl Context<ConfigMap, MyK8sRepo, StaticApiProvider<ConfigMap>> for MyContext {
     }
 
     async fn handle_cleanup(&self, object: Arc<ConfigMap>) -> KubeResult<Action> {
-        let name = object.metadata.name.as_ref().unwrap();
-        let namespace = object.metadata.namespace.as_ref().unwrap();
+        let name = object.try_name()?;
+        let namespace = object.try_namespace()?;
 
-        log::info!(
-            "ConfigMap {}/{} is being deleted - cleaning up",
-            namespace,
-            name
-        );
+        tracing::info!("ConfigMap {}/{} is being deleted - cleaning up", namespace, name);
 
         // In a real operator, you would perform cleanup here:
         // - Delete related resources
@@ -92,21 +84,22 @@ impl Reconcile<ConfigMap, MyContext, MyK8sRepo, StaticApiProvider<ConfigMap>> fo
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize logging
-    env_logger::init();
+    // Initialize tracing
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
 
-    log::info!("Starting Basic Operator");
+    tracing::info!("Starting Basic Operator");
 
     // Create Kubernetes client
     let client = Client::try_default().await?;
 
     // Create API provider with Strict caching strategy
     // We know we'll only watch the "default" namespace
-    let api_provider = StaticApiProvider::new(
-        client.clone(),
-        vec!["default"],
-        CachingStrategy::Strict,
-    );
+    let api_provider = StaticApiProvider::new(client.clone(), vec!["default"], CachingStrategy::Strict);
 
     // Create repository and context
     let k8s_repo = K8sRepository::new(api_provider);
@@ -120,7 +113,7 @@ async fn main() -> anyhow::Result<()> {
         crd_api: Api::namespaced(client, "default"),
     };
 
-    log::info!("Watching ConfigMaps in 'default' namespace");
+    tracing::info!("Watching ConfigMaps in 'default' namespace");
 
     // Start the reconciler (synchronously for simplicity)
     // Use start_concurrent(Some(10), None) for production
