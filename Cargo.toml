@@ -21,9 +21,13 @@ schemars = "1.1"
 serde = { version = "1.0", features = ["derive", "rc"] }
 
 log = { version = "0.4", features = ["kv", "kv_serde"] }
+tracing = "0.1"
 
 thiserror = "2.0"
 anyhow = "1.0"
+
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+strum = { version = "0.27", features = ["derive"] }
 
 [dev-dependencies]
 tokio = { version = "1.0", features = ["full"] }

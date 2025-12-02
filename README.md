@@ -1,7 +1,17 @@
 # Kuberator - Kubernetes Operator Framework
 
-`Kuberator`is a Kubernetes Operator Framework designed to simplify the process of 
-building Kubernetes Operators. It is still in its early stages and a work in progress. 
+`Kuberator`is a Kubernetes Operator Framework designed to simplify the process of
+building Kubernetes Operators. It is still in its early stages and a work in progress.
+
+## Features
+
+- **Trait-based Architecture** - Clean separation of concerns with `Finalize`, `Context`, and `Reconcile` traits
+- **API Caching** - Lock-free caching strategies for optimal performance (Strict, Adhoc, Extendable)
+- **Generic Repository** - Zero-boilerplate `K8sRepository` implementation
+- **Event Emission** - Built-in Kubernetes Event creation for observability
+- **Status Management** - Observed Generation Pattern with error handling support
+- **Graceful Shutdown** - Signal-based controller termination
+- **Concurrent Reconciliation** - Configurable parallelism with `start_concurrent()`
 
 ## Usage
 
@@ -219,6 +229,49 @@ let shutdown_signal = async {
 
 reconciler.start(Some(shutdown_signal)).await;
 ```
+
+## Event Emission
+
+Emit Kubernetes Events for observability. Events appear in `kubectl describe` output and provide visibility into operator operations.
+
+### Quick Example
+
+```rust
+use kuberator::events::{EventRecorder, EventData, Reason};
+use strum::{Display, AsRefStr};
+
+// Define your event reasons
+#[derive(Debug, Clone, Copy, Display, AsRefStr)]
+enum MyEventReason {
+    ResourceCreating,
+    ResourceCreated,
+    ReconciliationFailed,
+}
+
+impl Reason for MyEventReason {}
+
+// Setup event recorder
+let event_api_provider = Arc::new(StaticApiProvider::new(
+    client.clone(),
+    vec!["default"],
+    CachingStrategy::Adhoc,
+));
+
+let event_recorder = Arc::new(EventRecorder::new(
+    event_api_provider,
+    "my-operator"
+));
+
+// Emit events in reconciliation
+event_recorder.emit(
+    &resource,
+    EventData::normal(MyEventReason::ResourceCreated, "Resource created successfully")
+).await;
+```
+
+Events never fail reconciliation—errors are logged as warnings. Use `MockEventRecorder` for testing.
+
+See [module documentation](https://docs.rs/kuberator/latest/kuberator/events/) for detailed usage.
 
 ## Error Handling
 
